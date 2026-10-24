@@ -21,47 +21,48 @@
       text-align: center;
     }
 
-    h2 {
-      margin: 8px 0;
+    h1 {
+      font-size: 28px;
+      margin: 18px 0;
+    }
+
+    p {
+      font-size: 17px;
     }
 
     #status {
-      margin: 14px 0;
-      padding: 12px;
+      margin: 16px 0;
+      padding: 14px;
       background: #263449;
-      border-radius: 8px;
+      border-radius: 10px;
       overflow-wrap: anywhere;
     }
 
     #cameraBox {
-      position: relative;
       width: 100%;
       max-width: 640px;
-      margin: auto;
-      background: #000;
+      margin: 16px auto;
+      background: black;
+      border-radius: 12px;
       overflow: hidden;
-      border-radius: 10px;
     }
 
-    video, canvas {
+    #canvas {
       display: block;
       width: 100%;
       height: auto;
-    }
-
-    video {
-      display: none;
-    }
-
-    canvas {
       min-height: 220px;
     }
 
+    #video {
+      display: none;
+    }
+
     button {
-      padding: 13px 18px;
-      margin: 6px;
-      border: 0;
-      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 5px;
+      border: none;
+      border-radius: 10px;
       font-size: 16px;
       font-weight: bold;
       cursor: pointer;
@@ -77,13 +78,20 @@
       color: white;
     }
 
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
     #results {
-      margin-top: 12px;
-      white-space: pre-wrap;
+      margin-top: 16px;
+      text-align: left;
       overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
   </style>
 
+  <!-- Browser inference dependencies -->
   <script type="importmap">
   {
     "imports": {
@@ -96,7 +104,8 @@
 </head>
 
 <body>
-  <h2>YOLO11 Object Detection</h2>
+
+  <h1>YOLO11 Object Detection</h1>
   <p>Real-time camera detection</p>
 
   <div id="status">Ready. Press Start Camera.</div>
@@ -109,7 +118,9 @@
     <canvas id="canvas" width="640" height="480"></canvas>
   </div>
 
-  <div id="results">Detected objects will appear here.</div>
+  <div id="results">
+    Detected objects will appear here.
+  </div>
 
   <script type="module">
     import { YOLO, annotate } from "@ultralytics/yolo";
@@ -117,6 +128,7 @@
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
+
     const statusBox = document.getElementById("status");
     const resultsBox = document.getElementById("results");
     const startBtn = document.getElementById("startBtn");
@@ -124,38 +136,95 @@
 
     let model = null;
     let cameraStream = null;
-    let running = false;
+    let cameraActive = false;
+    let detecting = false;
     let busy = false;
+    let sessionId = 0;
 
     function setStatus(message) {
       statusBox.textContent = message;
     }
 
+    function clearCanvas() {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
     function stopCamera() {
-      running = false;
+      sessionId++;
+      cameraActive = false;
+      detecting = false;
+      busy = false;
 
       if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop());
         cameraStream = null;
       }
 
+      video.pause();
       video.srcObject = null;
-      setStatus("Camera stopped.");
+
       startBtn.disabled = false;
+      clearCanvas();
+      setStatus("Camera stopped.");
+      resultsBox.textContent = "Detection stopped.";
     }
 
     stopBtn.addEventListener("click", stopCamera);
 
+    // Show the live camera image while the model loads.
+    function drawPreview() {
+      if (!cameraActive) return;
+
+      if (video.readyState >= 2) {
+        ctx.drawImage(
+          video, 0, 0, canvas.width, canvas.height
+        );
+      }
+
+      requestAnimationFrame(drawPreview);
+    }
+
+    // Prevent model loading from waiting indefinitely.
+    async function loadModelWithTimeout() {
+      setStatus("Loading YOLO11 model. Please wait...");
+
+      const timeoutId = setTimeout(() => {}, 0);
+      clearTimeout(timeoutId);
+
+      let timerId;
+
+      try {
+        return await Promise.race([
+          YOLO.load("./yolo11n.tflite"),
+
+          new Promise((_, reject) => {
+            timerId = setTimeout(() => {
+              reject(new Error(
+                "Model loading timed out after 45 seconds. " +
+                "Check the model URL and browser runtime."
+              ));
+            }, 45000);
+          })
+        ]);
+      } finally {
+        clearTimeout(timerId);
+      }
+    }
+
     startBtn.addEventListener("click", async () => {
-      if (running) return;
+      if (cameraActive) return;
+
+      const mySession = ++sessionId;
 
       startBtn.disabled = true;
+      resultsBox.textContent = "Preparing camera...";
 
       try {
         if (!navigator.mediaDevices ||
             !navigator.mediaDevices.getUserMedia) {
           throw new Error(
-            "Camera access is unavailable. Open this page using HTTPS in a supported browser."
+            "Camera access is unavailable. Open the HTTPS website in Chrome."
           );
         }
 
@@ -164,70 +233,139 @@
         cameraStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
-            facingMode: "environment",
+            facingMode: { ideal: "environment" },
             width: { ideal: 640 },
             height: { ideal: 480 }
           }
         });
 
+        if (mySession !== sessionId) {
+          cameraStream.getTracks().forEach(track => track.stop());
+          cameraStream = null;
+          return;
+        }
+
         video.srcObject = cameraStream;
         await video.play();
 
-        setStatus("Loading YOLO11 model. Please wait...");
+        cameraActive = true;
+        drawPreview();
+
+        setStatus("Camera ready. Loading YOLO11 model...");
 
         if (!model) {
-          model = await YOLO.load("./yolo11n.tflite");
+          model = await loadModelWithTimeout();
         }
 
-        running = true;
-        setStatus("Model loaded. Detecting objects...");
+        if (mySession !== sessionId || !cameraActive) return;
+
+        setStatus("Model loaded. Starting object detection...");
         resultsBox.textContent = "Looking for objects...";
 
-        detectLoop();
+        detecting = true;
+        startBtn.disabled = false;
+
+        detectLoop(mySession);
 
       } catch (error) {
-        console.error(error);
-        stopCamera();
-        setStatus("Error: " + error.message);
-        resultsBox.textContent =
-          "Check the camera permission, internet connection, and model compatibility.";
+        console.error("YOLO11 error:", error);
+
+        if (mySession === sessionId) {
+          stopCamera();
+          setStatus("ERROR: " + (error.message || String(error)));
+          resultsBox.textContent =
+            "Detection could not start. Check your internet connection " +
+            "and browser runtime. If the problem continues, inspect " +
+            "Chrome's developer console for the detailed error.";
+        }
       } finally {
-        startBtn.disabled = false;
+        if (mySession === sessionId) {
+          startBtn.disabled = false;
+        }
       }
     });
 
-    async function detectLoop() {
-      if (!running || busy) return;
+    async function detectLoop(mySession) {
+      if (!detecting || !cameraActive ||
+          mySession !== sessionId || busy) {
+        return;
+      }
+
+      if (video.readyState < 2) {
+        setTimeout(() => detectLoop(mySession), 200);
+        return;
+      }
 
       busy = true;
 
       try {
-        if (video.readyState >= 2) {
-          const detections = await model.predict(video);
+        setStatus("YOLO11 is detecting objects...");
 
-          if (running) {
-            await annotate(canvas, video, detections);
-            resultsBox.textContent =
-              "Detection running. See the camera for bounding boxes.";
-            setStatus("YOLO11 is detecting objects.");
-          }
+        const results = await model.predict(video);
+
+        if (!detecting || !cameraActive ||
+            mySession !== sessionId) {
+          return;
         }
+
+        // Draw boxes and labels returned by the model.
+        await annotate(canvas, video, results);
+
+        const boxes = results && results.boxes
+          ? Array.from(results.boxes)
+          : [];
+
+        if (boxes.length > 0) {
+          const lines = boxes.map(box => {
+            const confidence =
+              (Number(box.conf) * 100).toFixed(1);
+
+            return `${box.name || "Object"} - ${confidence}%`;
+          });
+
+          resultsBox.textContent =
+            "Detected objects:\n" + lines.join("\n");
+        } else {
+          resultsBox.textContent =
+            "No objects detected in this frame.";
+        }
+
       } catch (error) {
-        console.error(error);
-        running = false;
-        setStatus("Detection error: " + error.message);
-        resultsBox.textContent =
-          "The browser runtime may not support this model export.";
+        console.error("Detection error:", error);
+
+        if (mySession === sessionId) {
+          detecting = false;
+          cameraActive = false;
+
+          if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+            cameraStream = null;
+          }
+
+          video.srcObject = null;
+          startBtn.disabled = false;
+
+          setStatus(
+            "DETECTION ERROR: " +
+            (error.message || String(error))
+          );
+
+          resultsBox.textContent =
+            "The model or browser inference runtime failed. " +
+            "Check the error in the status above.";
+        }
+
+        return;
       } finally {
         busy = false;
       }
 
-      if (running) {
-        setTimeout(detectLoop, 100);
-      } else {
-        startBtn.disabled = false;
+      if (detecting && cameraActive &&
+          mySession === sessionId) {
+        setTimeout(() => detectLoop(mySession), 100);
       }
     }
   </script>
+
 </body>
 </html>
