@@ -29,15 +29,6 @@ jobs:
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Check Android SDK
-        run: |
-          if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
-            echo "ERROR: Android SDK command-line tools not found."
-            exit 1
-          fi
-
-          sdkmanager --version
-
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses || true
 
@@ -50,32 +41,23 @@ jobs:
         with:
           gradle-version: "8.4"
 
-      - name: Find Android project and YOLO model
+      - name: Extract project and copy model
         shell: bash
         run: |
           set -e
 
-          echo "Checking repository files..."
-
-          echo "Searching for YOLO TFLite model..."
           MODEL_FILE=$(find . -maxdepth 1 -type f -iname 'yolo11n*.tflite' -print -quit)
-
-          if [ -z "$MODEL_FILE" ]; then
-            echo "ERROR: No yolo11n*.tflite file found in repository root."
-            echo "Make sure yolo11n (4).tflite is committed to GitHub."
-            exit 1
-          fi
-
-          echo "Found model: $MODEL_FILE"
-
           ZIP_FILE=$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Android project ZIP is missing from repository root."
+          if [ -z "$MODEL_FILE" ]; then
+            echo "ERROR: YOLO TFLite model not found."
             exit 1
           fi
 
-          echo "Found project ZIP: $ZIP_FILE"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Android project ZIP not found."
+            exit 1
+          fi
 
           mkdir -p extracted
           unzip -q "$ZIP_FILE" -d extracted
@@ -87,51 +69,105 @@ jobs:
           fi
 
           if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: Could not find settings.gradle or settings.gradle.kts in ZIP."
-            echo "Check that the ZIP contains the Android project."
+            echo "ERROR: Gradle settings file not found."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$PROJECT_FILE")
-
-          echo "Android project directory: $PROJECT_DIR"
-
-          mkdir -p "$PROJECT_DIR/app/src/main/assets"
-
-          cp "$MODEL_FILE" "$PROJECT_DIR/app/src/main/assets/yolo11n.tflite"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Model copied successfully."
-          ls -lh "$PROJECT_DIR/app/src/main/assets/yolo11n.tflite"
+          APP_DIR="$PROJECT_DIR/app/src/main"
+          RES="$APP_DIR/res"
+
+          mkdir -p "$APP_DIR/assets"
+          mkdir -p "$RES/xml"
+          mkdir -p "$RES/values"
+          mkdir -p "$RES/mipmap-mdpi"
+          mkdir -p "$RES/mipmap-hdpi"
+          mkdir -p "$RES/mipmap-xhdpi"
+          mkdir -p "$RES/mipmap-xxhdpi"
+          mkdir -p "$RES/mipmap-xxxhdpi"
+
+          cp "$MODEL_FILE" "$APP_DIR/assets/yolo11n.tflite"
+
+          # App strings and theme
+          cat > "$RES/values/strings.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">YOLO11 Object Detection</string>
+          </resources>
+          EOF
+
+          cat > "$RES/values/themes.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.YOLO11Detection" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#2196F3</item>
+                  <item name="android:windowLightStatusBar">true</item>
+              </style>
+          </resources>
+          EOF
+
+          # Backup rules
+          cat > "$RES/xml/backup_rules.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <full-backup-content />
+          EOF
+
+          cat > "$RES/xml/data_extraction_rules.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <data-extraction-rules>
+              <cloud-backup>
+                  <exclude domain="root" path="." />
+              </cloud-backup>
+              <device-transfer>
+                  <exclude domain="root" path="." />
+              </device-transfer>
+          </data-extraction-rules>
+          EOF
+
+          # Generate simple launcher icons using SVG converted to PNG.
+          # ImageMagick is installed on the GitHub runner.
+          cat > /tmp/icon.svg <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="192" height="192">
+            <rect width="192" height="192" rx="36" fill="#1976D2"/>
+            <path d="M35 55 H157 V137 H35 Z" fill="none" stroke="white" stroke-width="8"/>
+            <circle cx="96" cy="96" r="25" fill="none" stroke="white" stroke-width="8"/>
+            <path d="M65 55 L77 38 H115 L127 55" fill="none" stroke="white" stroke-width="8"/>
+          </svg>
+          EOF
+
+          for entry in \
+            "mipmap-mdpi:48" \
+            "mipmap-hdpi:72" \
+            "mipmap-xhdpi:96" \
+            "mipmap-xxhdpi:144" \
+            "mipmap-xxxhdpi:192"
+          do
+            folder="${entry%%:*}"
+            size="${entry##*:}"
+
+            convert /tmp/icon.svg -resize "${size}x${size}" \
+              "$RES/$folder/ic_launcher.png"
+
+            cp "$RES/$folder/ic_launcher.png" \
+              "$RES/$folder/ic_launcher_round.png"
+          done
+
+          echo "Project resources and model prepared."
+          ls -la "$RES/values" "$RES/xml"
 
       - name: Build debug APK
-        shell: bash
         run: |
           set -e
           cd "$PROJECT_DIR"
-
           gradle assembleDebug --stacktrace
-
-      - name: Find generated APK
-        shell: bash
-        run: |
-          set -e
-
-          APK_FILE=$(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name '*.apk' -print -quit)
-
-          if [ -z "$APK_FILE" ]; then
-            echo "ERROR: APK was not generated."
-            exit 1
-          fi
-
-          echo "APK generated successfully: $APK_FILE"
-          echo "APK_FILE=$APK_FILE" >> "$GITHUB_ENV"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: YOLO11-Android-APK
-          path: ${{ env.APK_FILE }}
+          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
