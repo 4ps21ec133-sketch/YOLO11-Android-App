@@ -1,204 +1,173 @@
+
 name: Build YOLO11 Android APK
 
 on:
-  workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - ".github/workflows/build-apk.yml"
+      - "*.zip"
+      - "*.tflite"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
-
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Configure Android SDK
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
         run: |
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
-
-      - name: Install Android SDK components
-        run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.4"
-
-      - name: Prepare Android project
+      - name: Find and extract Android project ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          MODEL_FILE=$(find . -maxdepth 1 -type f -iname 'yolo11n*.tflite' -print -quit)
-          ZIP_FILE=$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)
-
-          if [ -z "$MODEL_FILE" ]; then
-            echo "ERROR: No yolo11n*.tflite model found in repository root."
-            exit 1
-          fi
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Android project ZIP not found in repository root."
+            echo "ERROR: No Android project ZIP file found in repository root."
             exit 1
           fi
 
-          echo "Model found: $MODEL_FILE"
-          echo "Project ZIP found: $ZIP_FILE"
-
+          echo "Using project ZIP: $ZIP_FILE"
           mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
+          unzip -oq "$ZIP_FILE" -d extracted
 
-          PROJECT_FILE=$(find extracted -type f -name 'settings.gradle.kts' -print -quit)
+          SETTINGS_FILE=$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)
 
-          if [ -z "$PROJECT_FILE" ]; then
-            PROJECT_FILE=$(find extracted -type f -name 'settings.gradle' -print -quit)
-          fi
-
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: Gradle settings file not found in ZIP."
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Could not find settings.gradle or settings.gradle.kts inside the ZIP."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$PROJECT_FILE")
-          APP_DIR="$PROJECT_DIR/app/src/main"
-          RES="$APP_DIR/res"
-
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project found at: $PROJECT_DIR"
 
-          mkdir -p "$APP_DIR/assets"
-          mkdir -p "$RES/xml"
-          mkdir -p "$RES/values"
+      - name: Prepare Android resources and model
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$PROJECT_DIR/app"
+          RES="$APP/src/main/res"
+
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: Android app directory not found: $APP"
+            exit 1
+          fi
+
           mkdir -p "$RES/drawable"
-          mkdir -p "$RES/mipmap-anydpi"
+          mkdir -p "$RES/mipmap-anydpi-v26"
+          mkdir -p "$APP/src/main/assets"
 
-          cp "$MODEL_FILE" "$APP_DIR/assets/yolo11n.tflite"
-
-          # App name
-          cat > "$RES/values/strings.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <string name="app_name">YOLO11 Object Detection</string>
-          </resources>
-          EOF
-
-          # App theme
-          cat > "$RES/values/themes.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <style name="Theme.YOLO11Detection" parent="android:style/Theme.Material.Light.NoActionBar">
-                  <item name="android:fontFamily">sans</item>
-                  <item name="android:colorAccent">#2196F3</item>
-                  <item name="android:windowLightStatusBar">true</item>
-              </style>
-          </resources>
-          EOF
-
-          # Backup rules
-          cat > "$RES/xml/backup_rules.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <full-backup-content />
-          EOF
-
-          cat > "$RES/xml/data_extraction_rules.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <data-extraction-rules>
-              <cloud-backup>
-                  <exclude domain="root" path="." />
-              </cloud-backup>
-              <device-transfer>
-                  <exclude domain="root" path="." />
-              </device-transfer>
-          </data-extraction-rules>
-          EOF
-
-          # Vector launcher icon: no external image tool required
-          cat > "$RES/drawable/ic_launcher.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="48dp"
-              android:height="48dp"
-              android:viewportWidth="48"
-              android:viewportHeight="48">
-              <path
-                  android:fillColor="#1976D2"
-                  android:pathData="M0,0h48v48h-48z" />
-              <path
-                  android:fillColor="@android:color/transparent"
-                  android:strokeColor="#FFFFFF"
-                  android:strokeWidth="2.5"
-                  android:pathData="M9,14h30v20h-30z" />
-              <path
-                  android:fillColor="@android:color/transparent"
-                  android:strokeColor="#FFFFFF"
-                  android:strokeWidth="2.5"
-                  android:pathData="M18,14l3,-4h6l3,4" />
-              <path
-                  android:fillColor="@android:color/transparent"
-                  android:strokeColor="#FFFFFF"
-                  android:strokeWidth="2.5"
-                  android:pathData="M24,19a5,5 0,1 0,0 10a5,5 0,1 0,0 -10" />
-          </vector>
-          EOF
-
-          # Adaptive icon for modern Android versions
-          cat > "$RES/mipmap-anydpi/ic_launcher.xml" <<'EOF'
+          # Create adaptive launcher icons in the API 26+ resource directory.
+          cat > "$RES/mipmap-anydpi-v26/ic_launcher.xml" <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-              <background android:drawable="@android:color/holo_blue_dark" />
-              <foreground android:drawable="@drawable/ic_launcher" />
+              <background android:drawable="@drawable/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
           </adaptive-icon>
           EOF
 
-          # Round icon reference
-          cp "$RES/mipmap-anydpi/ic_launcher.xml" "$RES/mipmap-anydpi/ic_launcher_round.xml"
+          cp "$RES/mipmap-anydpi-v26/ic_launcher.xml" \
+             "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
 
-          echo "Project prepared successfully."
-          echo "Model size:"
-          ls -lh "$APP_DIR/assets/yolo11n.tflite"
+          # Create simple vector artwork if the project does not provide it.
+          if [ ! -f "$RES/drawable/ic_launcher_background.xml" ]; then
+            cat > "$RES/drawable/ic_launcher_background.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"
+              android:shape="rectangle">
+              <solid android:color="#202A44"/>
+          </shape>
+          EOF
+          fi
+
+          if [ ! -f "$RES/drawable/ic_launcher_foreground.xml" ]; then
+            cat > "$RES/drawable/ic_launcher_foreground.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M24,30 L84,30 L84,78 L24,78 Z"/>
+              <path
+                  android:fillColor="#202A44"
+                  android:pathData="M34,40 L47,40 L47,53 L34,53 Z M61,40 L74,40 L74,53 L61,53 Z M34,60 L74,60 L74,68 L34,68 Z"/>
+          </vector>
+          EOF
+          fi
+
+          # Locate the model uploaded to the repository root.
+          MODEL_FILE=$(find . -maxdepth 1 -type f -iname '*.tflite' | head -n 1 || true)
+
+          if [ -n "$MODEL_FILE" ]; then
+            cp "$MODEL_FILE" "$APP/src/main/assets/yolo11n.tflite"
+            echo "Model copied from: $MODEL_FILE"
+          else
+            echo "ERROR: No .tflite model found in repository root."
+            exit 1
+          fi
+
+          echo "Prepared resources and model."
+
+      - name: Make Gradle wrapper executable
+        run: |
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            chmod +x "$PROJECT_DIR/gradlew"
+          fi
 
       - name: Build debug APK
-        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
-          gradle assembleDebug --stacktrace
+          set -o pipefail
+          if [ -f ./gradlew ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
 
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
+          APK=$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/debug/*.apk' | head -n 1)
 
-          APK_FILE=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-            -type f -name '*.apk' -print -quit)
-
-          if [ -z "$APK_FILE" ]; then
+          if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK generated: $APK_FILE"
+          echo "APK generated successfully: $APK"
+          mkdir -p output
+          cp "$APK" output/YOLO11-Android-App-debug.apk
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YOLO11-Android-APK
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          name: YOLO11-Android-App-debug
+          path: output/YOLO11-Android-App-debug.apk
           if-no-files-found: error
-          retention-days: 7
