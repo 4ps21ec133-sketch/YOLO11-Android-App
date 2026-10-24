@@ -1,4 +1,3 @@
-```yaml
 name: Build YOLO11 Android APK
 
 on:
@@ -203,4 +202,3 @@ jobs:
           path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
-```
