@@ -1,0 +1,79 @@
+
+name: Build YOLO11 Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-apk.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle 8.4
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.4"
+
+      - name: Extract Android project and add model
+        shell: bash
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Android project ZIP not found in repository root."
+            exit 1
+          fi
+
+          if [ ! -f "yolo11n.tflite" ]; then
+            echo "ERROR: yolo11n.tflite not found in repository root."
+            exit 1
+          fi
+
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          PROJECT_FILE=$(find extracted -type f -name settings.gradle.kts -print -quit)
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: settings.gradle.kts not found in the ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+          mkdir -p "$PROJECT_DIR/app/src/main/assets"
+          cp yolo11n.tflite "$PROJECT_DIR/app/src/main/assets/yolo11n.tflite"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+        working-directory: extracted/RealTimeObjectDetectionYOLO11n
+
+      - name: Copy APK
+        run: |
+          cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" ./app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: YOLO11-Android-APK
+          path: app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
