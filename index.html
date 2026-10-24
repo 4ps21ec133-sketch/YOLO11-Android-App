@@ -1,1 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1">
 
+  <title>YOLO11 Live Object Detection</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      background: #101827;
+      color: white;
+      font-family: Arial, sans-serif;
+      text-align: center;
+    }
+
+    h2 {
+      margin: 8px 0;
+    }
+
+    #status {
+      margin: 14px 0;
+      padding: 12px;
+      background: #263449;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    #cameraBox {
+      position: relative;
+      width: 100%;
+      max-width: 640px;
+      margin: auto;
+      background: #000;
+      overflow: hidden;
+      border-radius: 10px;
+    }
+
+    video, canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    video {
+      display: none;
+    }
+
+    canvas {
+      min-height: 220px;
+    }
+
+    button {
+      padding: 13px 18px;
+      margin: 6px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    #startBtn {
+      background: #22c55e;
+      color: #07130b;
+    }
+
+    #stopBtn {
+      background: #ef4444;
+      color: white;
+    }
+
+    #results {
+      margin-top: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo",
+      "@litertjs/core": "https://esm.sh/@litertjs/core",
+      "@litertjs/wasm-utils": "https://esm.sh/@litertjs/wasm-utils"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <h2>YOLO11 Object Detection</h2>
+  <p>Real-time camera detection</p>
+
+  <div id="status">Ready. Press Start Camera.</div>
+
+  <button id="startBtn">Start Camera</button>
+  <button id="stopBtn">Stop Camera</button>
+
+  <div id="cameraBox">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
+  </div>
+
+  <div id="results">Detected objects will appear here.</div>
+
+  <script type="module">
+    import { YOLO, annotate } from "@ultralytics/yolo";
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const statusBox = document.getElementById("status");
+    const resultsBox = document.getElementById("results");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+
+    let model = null;
+    let cameraStream = null;
+    let running = false;
+    let busy = false;
+
+    function setStatus(message) {
+      statusBox.textContent = message;
+    }
+
+    function stopCamera() {
+      running = false;
+
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+
+      video.srcObject = null;
+      setStatus("Camera stopped.");
+      startBtn.disabled = false;
+    }
+
+    stopBtn.addEventListener("click", stopCamera);
+
+    startBtn.addEventListener("click", async () => {
+      if (running) return;
+
+      startBtn.disabled = true;
+
+      try {
+        if (!navigator.mediaDevices ||
+            !navigator.mediaDevices.getUserMedia) {
+          throw new Error(
+            "Camera access is unavailable. Open this page using HTTPS in a supported browser."
+          );
+        }
+
+        setStatus("Requesting camera permission...");
+
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: "environment",
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+
+        video.srcObject = cameraStream;
+        await video.play();
+
+        setStatus("Loading YOLO11 model. Please wait...");
+
+        if (!model) {
+          model = await YOLO.load("./yolo11n.tflite");
+        }
+
+        running = true;
+        setStatus("Model loaded. Detecting objects...");
+        resultsBox.textContent = "Looking for objects...";
+
+        detectLoop();
+
+      } catch (error) {
+        console.error(error);
+        stopCamera();
+        setStatus("Error: " + error.message);
+        resultsBox.textContent =
+          "Check the camera permission, internet connection, and model compatibility.";
+      } finally {
+        startBtn.disabled = false;
+      }
+    });
+
+    async function detectLoop() {
+      if (!running || busy) return;
+
+      busy = true;
+
+      try {
+        if (video.readyState >= 2) {
+          const detections = await model.predict(video);
+
+          if (running) {
+            await annotate(canvas, video, detections);
+            resultsBox.textContent =
+              "Detection running. See the camera for bounding boxes.";
+            setStatus("YOLO11 is detecting objects.");
+          }
+        }
+      } catch (error) {
+        console.error(error);
+        running = false;
+        setStatus("Detection error: " + error.message);
+        resultsBox.textContent =
+          "The browser runtime may not support this model export.";
+      } finally {
+        busy = false;
+      }
+
+      if (running) {
+        setTimeout(detectLoop, 100);
+      } else {
+        startBtn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
