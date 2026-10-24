@@ -1,3 +1,4 @@
+```yaml
 name: Build YOLO11 Android APK
 
 on:
@@ -41,23 +42,26 @@ jobs:
         with:
           gradle-version: "8.4"
 
-      - name: Extract project and copy model
+      - name: Prepare Android project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           MODEL_FILE=$(find . -maxdepth 1 -type f -iname 'yolo11n*.tflite' -print -quit)
           ZIP_FILE=$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)
 
           if [ -z "$MODEL_FILE" ]; then
-            echo "ERROR: YOLO TFLite model not found."
+            echo "ERROR: No yolo11n*.tflite model found in repository root."
             exit 1
           fi
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Android project ZIP not found."
+            echo "ERROR: Android project ZIP not found in repository root."
             exit 1
           fi
+
+          echo "Model found: $MODEL_FILE"
+          echo "Project ZIP found: $ZIP_FILE"
 
           mkdir -p extracted
           unzip -q "$ZIP_FILE" -d extracted
@@ -69,28 +73,25 @@ jobs:
           fi
 
           if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: Gradle settings file not found."
+            echo "ERROR: Gradle settings file not found in ZIP."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$PROJECT_FILE")
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
           APP_DIR="$PROJECT_DIR/app/src/main"
           RES="$APP_DIR/res"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           mkdir -p "$APP_DIR/assets"
           mkdir -p "$RES/xml"
           mkdir -p "$RES/values"
-          mkdir -p "$RES/mipmap-mdpi"
-          mkdir -p "$RES/mipmap-hdpi"
-          mkdir -p "$RES/mipmap-xhdpi"
-          mkdir -p "$RES/mipmap-xxhdpi"
-          mkdir -p "$RES/mipmap-xxxhdpi"
+          mkdir -p "$RES/drawable"
+          mkdir -p "$RES/mipmap-anydpi"
 
           cp "$MODEL_FILE" "$APP_DIR/assets/yolo11n.tflite"
 
-          # App strings and theme
+          # App name
           cat > "$RES/values/strings.xml" <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -98,6 +99,7 @@ jobs:
           </resources>
           EOF
 
+          # App theme
           cat > "$RES/values/themes.xml" <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -127,42 +129,72 @@ jobs:
           </data-extraction-rules>
           EOF
 
-          # Generate simple launcher icons using SVG converted to PNG.
-          # ImageMagick is installed on the GitHub runner.
-          cat > /tmp/icon.svg <<'EOF'
-          <svg xmlns="http://www.w3.org/2000/svg" width="192" height="192">
-            <rect width="192" height="192" rx="36" fill="#1976D2"/>
-            <path d="M35 55 H157 V137 H35 Z" fill="none" stroke="white" stroke-width="8"/>
-            <circle cx="96" cy="96" r="25" fill="none" stroke="white" stroke-width="8"/>
-            <path d="M65 55 L77 38 H115 L127 55" fill="none" stroke="white" stroke-width="8"/>
-          </svg>
+          # Vector launcher icon: no external image tool required
+          cat > "$RES/drawable/ic_launcher.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="48dp"
+              android:height="48dp"
+              android:viewportWidth="48"
+              android:viewportHeight="48">
+              <path
+                  android:fillColor="#1976D2"
+                  android:pathData="M0,0h48v48h-48z" />
+              <path
+                  android:fillColor="@android:color/transparent"
+                  android:strokeColor="#FFFFFF"
+                  android:strokeWidth="2.5"
+                  android:pathData="M9,14h30v20h-30z" />
+              <path
+                  android:fillColor="@android:color/transparent"
+                  android:strokeColor="#FFFFFF"
+                  android:strokeWidth="2.5"
+                  android:pathData="M18,14l3,-4h6l3,4" />
+              <path
+                  android:fillColor="@android:color/transparent"
+                  android:strokeColor="#FFFFFF"
+                  android:strokeWidth="2.5"
+                  android:pathData="M24,19a5,5 0,1 0,0 10a5,5 0,1 0,0 -10" />
+          </vector>
           EOF
 
-          for entry in \
-            "mipmap-mdpi:48" \
-            "mipmap-hdpi:72" \
-            "mipmap-xhdpi:96" \
-            "mipmap-xxhdpi:144" \
-            "mipmap-xxxhdpi:192"
-          do
-            folder="${entry%%:*}"
-            size="${entry##*:}"
+          # Adaptive icon for modern Android versions
+          cat > "$RES/mipmap-anydpi/ic_launcher.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@android:color/holo_blue_dark" />
+              <foreground android:drawable="@drawable/ic_launcher" />
+          </adaptive-icon>
+          EOF
 
-            convert /tmp/icon.svg -resize "${size}x${size}" \
-              "$RES/$folder/ic_launcher.png"
+          # Round icon reference
+          cp "$RES/mipmap-anydpi/ic_launcher.xml" "$RES/mipmap-anydpi/ic_launcher_round.xml"
 
-            cp "$RES/$folder/ic_launcher.png" \
-              "$RES/$folder/ic_launcher_round.png"
-          done
-
-          echo "Project resources and model prepared."
-          ls -la "$RES/values" "$RES/xml"
+          echo "Project prepared successfully."
+          echo "Model size:"
+          ls -lh "$APP_DIR/assets/yolo11n.tflite"
 
       - name: Build debug APK
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           cd "$PROJECT_DIR"
           gradle assembleDebug --stacktrace
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_FILE=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -type f -name '*.apk' -print -quit)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK generated: $APK_FILE"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -171,3 +203,4 @@ jobs:
           path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
+```
