@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -18,22 +17,19 @@
       text-align: center;
     }
 
-    h1 {
-      font-size: 25px;
-      margin-bottom: 8px;
-    }
+    h1 { font-size: 25px; }
 
-    .subtitle {
+    .subtitle, .note {
       color: #c6d1dc;
       font-size: 14px;
-      margin-bottom: 18px;
+      line-height: 1.6;
     }
 
     .viewer {
       position: relative;
       width: 100%;
       max-width: 640px;
-      margin: 0 auto;
+      margin: 16px auto;
       overflow: hidden;
       background: #000;
       border: 2px solid #3c5368;
@@ -51,9 +47,9 @@
 
     canvas { pointer-events: none; }
 
-    #status {
-      margin: 14px auto;
+    #status, #modelStatus {
       max-width: 640px;
+      margin: 12px auto;
       padding: 12px;
       background: #243447;
       border-radius: 8px;
@@ -61,19 +57,26 @@
       overflow-wrap: anywhere;
     }
 
-    .buttons {
-      display: flex;
-      justify-content: center;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 16px 0;
+    .controls {
+      max-width: 640px;
+      margin: 14px auto;
+    }
+
+    select, button {
+      padding: 12px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 15px;
+      margin: 5px;
+    }
+
+    select {
+      width: 100%;
+      background: white;
+      color: #101820;
     }
 
     button {
-      padding: 12px 20px;
-      border: none;
-      border-radius: 8px;
-      font-size: 16px;
       font-weight: bold;
       cursor: pointer;
     }
@@ -102,10 +105,7 @@
       border-radius: 8px;
     }
 
-    summary {
-      cursor: pointer;
-      font-weight: bold;
-    }
+    summary { cursor: pointer; font-weight: bold; }
 
     pre {
       white-space: pre-wrap;
@@ -113,20 +113,14 @@
       font-size: 12px;
       color: #b9f6ca;
     }
-
-    .note {
-      max-width: 640px;
-      margin: 14px auto;
-      color: #c6d1dc;
-      font-size: 13px;
-      line-height: 1.6;
-    }
   </style>
 
   <script type="importmap">
   {
     "imports": {
-      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo"
+      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo",
+      "@litertjs/core": "https://esm.sh/@litertjs/core",
+      "@litertjs/wasm-utils": "https://esm.sh/@litertjs/wasm-utils"
     }
   }
   </script>
@@ -136,7 +130,15 @@
   <h1>YOLO11 Object Detection</h1>
 
   <div class="subtitle">
-    Real-time detection using your custom YOLO model
+    Camera-based object detection using your available models
+  </div>
+
+  <div class="controls">
+    <label for="modelSelect">Choose detection model:</label>
+    <select id="modelSelect">
+      <option value="tflite">Original model — yolo11n.tflite</option>
+      <option value="onnx">Custom model — best.onnx</option>
+    </select>
   </div>
 
   <div class="viewer">
@@ -145,21 +147,21 @@
   </div>
 
   <div id="status">Press Start Camera to begin.</div>
+  <div id="modelStatus">Models have not been loaded yet.</div>
 
-  <div class="buttons">
-    <button id="startButton">Start Camera</button>
+  <div class="controls">
+    <button id="startButton">Start Camera & Load Models</button>
     <button id="stopButton" disabled>Stop Camera</button>
   </div>
 
   <details open>
     <summary>Detection Diagnostics</summary>
-    <pre id="debug">Model not loaded yet.</pre>
+    <pre id="debug">Waiting for model loading.</pre>
   </details>
 
   <div class="note">
-    Allow camera permission when asked.
-    Keep best.onnx in the same folder as index.html.
-    The model determines which classes can be detected.
+    Both model files must be in the same folder as index.html.
+    The selected model is used for detection.
   </div>
 
   <script type="module">
@@ -168,23 +170,36 @@
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
     const statusBox = document.getElementById("status");
+    const modelStatus = document.getElementById("modelStatus");
     const debugBox = document.getElementById("debug");
+    const modelSelect = document.getElementById("modelSelect");
     const startButton = document.getElementById("startButton");
     const stopButton = document.getElementById("stopButton");
 
-    // Custom ONNX model
-    const MODEL_PATH = "./best.onnx?v=2";
+    const MODEL_FILES = {
+      tflite: "./yolo11n.tflite",
+      onnx: "./best.onnx"
+    };
 
     const CONFIDENCE = 0.25;
     const IOU = 0.70;
 
-    let model = null;
+    const models = {
+      tflite: null,
+      onnx: null
+    };
+
+    const modelErrors = {
+      tflite: null,
+      onnx: null
+    };
+
     let cameraStream = null;
     let running = false;
     let detecting = false;
-    let modelLoading = false;
+    let loading = false;
     let loopTimer = null;
-    let startRequest = 0;
+    let requestId = 0;
 
     function setStatus(message) {
       statusBox.textContent = message;
@@ -194,79 +209,143 @@
       debugBox.textContent = message;
     }
 
-    function clearCanvas() {
-      const context = canvas.getContext("2d");
-      context.clearRect(0, 0, canvas.width, canvas.height);
+    function selectedKey() {
+      return modelSelect.value;
+    }
+
+    function selectedModel() {
+      return models[selectedKey()];
+    }
+
+    function updateModelStatus() {
+      const lines = Object.keys(MODEL_FILES).map(key => {
+        const name = MODEL_FILES[key];
+
+        if (models[key]) {
+          return name + ": LOADED";
+        }
+
+        if (modelErrors[key]) {
+          return name + ": FAILED — " + modelErrors[key];
+        }
+
+        return name + ": NOT LOADED";
+      });
+
+      modelStatus.textContent = lines.join("\n");
     }
 
     function updateCanvasSize() {
-      if (video.videoWidth && video.videoHeight) {
-        if (
-          canvas.width !== video.videoWidth ||
-          canvas.height !== video.videoHeight
-        ) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-        }
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      if (
+        canvas.width !== video.videoWidth ||
+        canvas.height !== video.videoHeight
+      ) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
       }
     }
 
-    async function loadModel() {
-      if (model) return model;
+    function clearCanvas() {
+      canvas.getContext("2d").clearRect(
+        0, 0, canvas.width, canvas.height
+      );
+    }
 
-      if (modelLoading) {
-        throw new Error("Model is already loading. Please wait.");
-      }
-
-      modelLoading = true;
-      setStatus("Loading best.onnx...");
-      setDebug("Loading model:\n" + MODEL_PATH);
+    async function loadOneModel(key) {
+      if (models[key]) return models[key];
 
       try {
-        model = await YOLO.load(MODEL_PATH, {
+        setStatus("Loading " + MODEL_FILES[key] + "...");
+
+        const loadedModel = await YOLO.load(MODEL_FILES[key], {
           device: "cpu"
         });
 
+        models[key] = loadedModel;
+        modelErrors[key] = null;
+        updateModelStatus();
+
+        return loadedModel;
+      } catch (error) {
+        modelErrors[key] = error.message || String(error);
+        updateModelStatus();
+        console.error("Model loading failed:", key, error);
+        return null;
+      }
+    }
+
+    async function loadAllModels() {
+      if (loading) return;
+
+      loading = true;
+      startButton.disabled = true;
+
+      try {
+        // Load sequentially to reduce peak memory use.
+        await loadOneModel("tflite");
+        await loadOneModel("onnx");
+
+        updateModelStatus();
+
+        const loadedCount = Object.values(models).filter(Boolean).length;
+
+        if (loadedCount === 0) {
+          throw new Error(
+            "Neither model loaded. Check the files and browser console."
+          );
+        }
+
         setDebug(
-          "MODEL LOADED\n\n" +
-          "File: " + MODEL_PATH + "\n" +
-          "Device: " + (model.device ?? "unknown") + "\n" +
-          "Confidence: " + CONFIDENCE + "\n" +
-          "IoU: " + IOU + "\n\n" +
-          "Model class information:\n" +
-          JSON.stringify(
-            model.names ?? model.metadata ?? "Class names not exposed by this library",
-            null,
-            2
-          )
+          "Model loading report\n\n" +
+          "TFLite file: " + MODEL_FILES.tflite + "\n" +
+          "TFLite loaded: " + Boolean(models.tflite) + "\n" +
+          "TFLite classes:\n" +
+          JSON.stringify(models.tflite?.names ?? "Not exposed", null, 2) +
+          "\n\nONNX file: " + MODEL_FILES.onnx + "\n" +
+          "ONNX loaded: " + Boolean(models.onnx) + "\n" +
+          "ONNX classes:\n" +
+          JSON.stringify(models.onnx?.names ?? "Not exposed", null, 2)
         );
 
-        return model;
+        if (!selectedModel()) {
+          modelSelect.value = models.tflite ? "tflite" : "onnx";
+        }
+
+        if (cameraStream) {
+          running = true;
+          stopButton.disabled = false;
+          startButton.disabled = true;
+          setStatus("Models loaded. Detecting with " + MODEL_FILES[selectedKey()]);
+          detectLoop();
+        } else {
+          setStatus(
+            loadedCount + " of 2 models loaded. Start the camera to detect."
+          );
+          startButton.disabled = false;
+        }
       } catch (error) {
-        model = null;
-        throw new Error(
-          "Failed to load best.onnx. Check the model file, internet " +
-          "connection and model compatibility.\n" + error.message
-        );
+        setStatus("Loading error: " + error.message);
+        setDebug(error.stack || error.message);
+        startButton.disabled = false;
       } finally {
-        modelLoading = false;
+        loading = false;
       }
     }
 
     async function startCamera() {
-      if (running || cameraStream || modelLoading) return;
+      if (cameraStream || loading) return;
 
-      const requestId = ++startRequest;
+      const thisRequest = ++requestId;
       startButton.disabled = true;
 
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus("Camera unavailable. Open the website over HTTPS.");
-        startButton.disabled = false;
-        return;
-      }
-
       try {
-        setStatus("Opening camera...");
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Open this website using HTTPS in Chrome.");
+        }
+
+        setStatus("Requesting camera permission...");
 
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -277,48 +356,46 @@
           }
         });
 
-        if (requestId !== startRequest) {
+        if (thisRequest !== requestId) {
           stream.getTracks().forEach(track => track.stop());
           return;
         }
 
         cameraStream = stream;
         video.srcObject = stream;
-
         await video.play();
         updateCanvasSize();
 
-        setStatus("Camera ready. Loading model...");
-        await loadModel();
-
-        if (requestId !== startRequest) return;
-
-        running = true;
-        startButton.disabled = true;
-        stopButton.disabled = false;
-
-        setStatus("Model loaded. Detecting objects...");
-        detectLoop();
-
+        await loadAllModels();
       } catch (error) {
         console.error(error);
         stopCamera(false);
-        setStatus("Error: " + error.message);
-        setDebug(
-          "ERROR\n\n" +
-          (error.stack || error.message) +
-          "\n\nCheck that best.onnx exists beside index.html."
-        );
+        setStatus("Could not start: " + error.message);
+        setDebug(error.stack || error.message);
         startButton.disabled = false;
       }
     }
 
     async function detectLoop() {
-      if (!running || detecting || !model) return;
+      if (!running || detecting) return;
 
       detecting = true;
 
       try {
+        const key = selectedKey();
+        const model = selectedModel();
+
+        if (!model) {
+          setStatus(
+            MODEL_FILES[key] + " did not load. Choose the other model."
+          );
+          setDebug(
+            "Selected model failed to load.\n" +
+            String(modelErrors[key] || "Unknown error")
+          );
+          return;
+        }
+
         if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
           return;
         }
@@ -336,36 +413,25 @@
 
         if (!running) return;
 
-        const boxes = Array.isArray(results?.boxes)
-          ? results.boxes
-          : [];
+        const boxes = Array.isArray(results?.boxes) ? results.boxes : [];
 
         setStatus(
-          boxes.length > 0
-            ? "Objects detected: " + boxes.length
-            : "No objects detected in this frame."
+          boxes.length
+            ? MODEL_FILES[key] + " — detections: " + boxes.length
+            : MODEL_FILES[key] + " — no objects detected in this frame."
         );
 
         setDebug(
-          "MODEL: " + MODEL_PATH + "\n" +
+          "Selected model: " + MODEL_FILES[key] + "\n" +
+          "Device: " + (model.device ?? "unknown") + "\n" +
           "Task: " + (results?.task ?? "not reported") + "\n" +
-          "Device: " + (model?.device ?? "unknown") + "\n" +
-          "Frame: " +
-            (results?.width ?? "?") + " x " +
-            (results?.height ?? "?") + "\n" +
-          "Detections: " + boxes.length + "\n" +
-          "Confidence threshold: " + CONFIDENCE + "\n" +
-          "IoU threshold: " + IOU + "\n\n" +
-          "Model classes:\n" +
-          JSON.stringify(
-            model.names ?? "Not exposed by library",
-            null,
-            2
-          ) +
-          "\n\nRaw detection results:\n" +
+          "Detection count: " + boxes.length + "\n" +
+          "Confidence threshold: " + CONFIDENCE + "\n\n" +
+          "Model class information:\n" +
+          JSON.stringify(model.names ?? "Not exposed", null, 2) +
+          "\n\nDetection results:\n" +
           JSON.stringify(boxes, null, 2)
         );
-
       } catch (error) {
         console.error("Detection error:", error);
         setStatus("Detection error: " + error.message);
@@ -379,8 +445,16 @@
       }
     }
 
+    modelSelect.addEventListener("change", () => {
+      clearCanvas();
+
+      if (running) {
+        setStatus("Switching to " + MODEL_FILES[selectedKey()] + "...");
+      }
+    });
+
     function stopCamera(showMessage = true) {
-      startRequest++;
+      requestId++;
       running = false;
 
       if (loopTimer !== null) {
@@ -398,16 +472,15 @@
       clearCanvas();
 
       stopButton.disabled = true;
-      startButton.disabled = false;
+      startButton.disabled = loading;
 
       if (showMessage) {
-        setStatus("Camera stopped.");
+        setStatus("Camera stopped. Loaded models remain available.");
       }
     }
 
     startButton.addEventListener("click", startCamera);
     stopButton.addEventListener("click", () => stopCamera());
-
     window.addEventListener("pagehide", () => stopCamera(false));
   </script>
 </body>
