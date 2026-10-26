@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,9 +7,7 @@
   <title>YOLO11 Object Detection</title>
 
   <style>
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -42,17 +41,12 @@
       aspect-ratio: 3 / 4;
     }
 
-    video,
-    canvas {
+    video, canvas {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
       object-fit: contain;
-    }
-
-    video {
-      transform: scaleX(-1);
     }
 
     canvas {
@@ -134,9 +128,7 @@
   <script type="importmap">
   {
     "imports": {
-      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo",
-      "@litertjs/core": "https://esm.sh/@litertjs/core",
-      "@litertjs/wasm-utils": "https://esm.sh/@litertjs/wasm-utils"
+      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo"
     }
   }
   </script>
@@ -144,8 +136,9 @@
 
 <body>
   <h1>YOLO11 Object Detection</h1>
+
   <div class="subtitle">
-    Real-time object detection using your camera
+    Real-time object detection using your custom YOLO model
   </div>
 
   <div class="viewer">
@@ -168,8 +161,9 @@
   </details>
 
   <div class="note">
-    Allow camera permission when asked. For best testing, show one
-    clearly visible object at a time with good lighting.
+    Allow camera permission when asked. Keep best.onnx in the same
+    folder as index.html. Detection labels depend on the classes
+    included in your trained model.
   </div>
 
   <script type="module">
@@ -182,8 +176,10 @@
     const startButton = document.getElementById("startButton");
     const stopButton = document.getElementById("stopButton");
 
-    const MODEL_PATH = "./yolo11n.tflite";
-    const CONFIDENCE = 0.10;
+    // UPDATED: Load your ONNX model instead of the TFLite model.
+    const MODEL_PATH = "./best.onnx";
+
+    const CONFIDENCE = 0.25;
     const IOU = 0.70;
 
     let model = null;
@@ -191,6 +187,8 @@
     let running = false;
     let detecting = false;
     let modelLoading = false;
+    let loopTimer = null;
+    let startRequest = 0;
 
     function setStatus(message) {
       statusBox.textContent = message;
@@ -206,108 +204,115 @@
     }
 
     function updateCanvasSize() {
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-
-      if (width > 0 && height > 0) {
-        canvas.width = width;
-        canvas.height = height;
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        if (canvas.width !== video.videoWidth ||
+            canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
       }
     }
 
     async function loadModel() {
-      if (model) {
-        return model;
-      }
+      if (model) return model;
 
       if (modelLoading) {
-        throw new Error("The model is already loading. Please wait.");
+        throw new Error("Model is already loading. Please wait.");
       }
 
       modelLoading = true;
-      setStatus("Loading YOLO11 model on CPU. Please wait...");
-      setDebug("Loading model file: " + MODEL_PATH);
+      setStatus("Loading best.onnx. Please wait...");
+      setDebug("Model file: " + MODEL_PATH + "\nDevice requested: CPU");
 
       try {
-        model = await Promise.race([
-          YOLO.load(MODEL_PATH, {
-            device: "cpu"
-          }),
-          new Promise((_, reject) => {
-            setTimeout(() => {
-              reject(
-                new Error(
-                  "Model loading took too long. Check the model file and internet connection."
-                )
-              );
-            }, 60000);
-          })
-        ]);
+        // ONNX models are supported by the Ultralytics YOLO library.
+        model = await YOLO.load(MODEL_PATH, {
+          device: "cpu"
+        });
 
         setDebug(
           "Model loaded successfully.\n" +
           "Model file: " + MODEL_PATH + "\n" +
-          "Requested device: cpu\n" +
-          "Reported device: " + (model.device ?? "unknown")
+          "Requested device: CPU\n" +
+          "Actual device: " + (model.device ?? "unknown") + "\n" +
+          "Confidence threshold: " + CONFIDENCE + "\n" +
+          "IoU threshold: " + IOU
         );
 
         return model;
+      } catch (error) {
+        model = null;
+        throw new Error(
+          "Could not load best.onnx. Check the filename, file location, " +
+          "internet connection and model compatibility. Details: " +
+          error.message
+        );
       } finally {
         modelLoading = false;
       }
     }
 
     async function startCamera() {
-      if (running) {
-        return;
-      }
+      if (running || cameraStream) return;
+
+      const requestId = ++startRequest;
+      startButton.disabled = true;
 
       if (!navigator.mediaDevices ||
           !navigator.mediaDevices.getUserMedia) {
         setStatus(
-          "Camera access is unavailable. Open this page in Chrome using HTTPS."
+          "Camera unavailable. Open this website over HTTPS in Chrome."
         );
+        startButton.disabled = false;
         return;
       }
-
-      startButton.disabled = true;
 
       try {
         setStatus("Requesting camera permission...");
 
-        cameraStream = await navigator.mediaDevices.getUserMedia({
+        const newStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
-            facingMode: "environment",
+            facingMode: { ideal: "environment" },
             width: { ideal: 640 },
             height: { ideal: 640 }
           }
         });
 
-        video.srcObject = cameraStream;
-        await video.play();
+        // Stop a camera request if the user stopped while it was opening.
+        if (requestId !== startRequest) {
+          newStream.getTracks().forEach(track => track.stop());
+          return;
+        }
 
+        cameraStream = newStream;
+        video.srcObject = cameraStream;
+
+        await video.play();
         updateCanvasSize();
 
-        setStatus("Camera started. Loading YOLO11 model...");
+        setStatus("Camera started. Loading ONNX model...");
 
         await loadModel();
+
+        if (requestId !== startRequest) return;
 
         running = true;
         stopButton.disabled = false;
         startButton.disabled = true;
 
-        setStatus("YOLO11 is detecting objects on CPU...");
+        setStatus("Model ready. Detecting objects...");
         detectLoop();
+
       } catch (error) {
         console.error(error);
 
-        stopCamera();
+        stopCamera(false);
 
         setStatus("Could not start: " + error.message);
         setDebug(
           "Error:\n" + (error.stack || error.message) +
-          "\n\nCheck that yolo11n.tflite exists beside index.html."
+          "\n\nConfirm that best.onnx is in the same folder as index.html."
         );
 
         startButton.disabled = false;
@@ -315,9 +320,7 @@
     }
 
     async function detectLoop() {
-      if (!running || detecting || !model) {
-        return;
-      }
+      if (!running || detecting || !model) return;
 
       detecting = true;
 
@@ -333,57 +336,58 @@
           iou: IOU
         });
 
-        if (!running) {
-          return;
-        }
+        if (!running) return;
 
         const boxes = Array.isArray(results?.boxes)
           ? results.boxes
           : [];
 
-        // Draw the video and detection boxes using the library helper.
         await annotate(canvas, video, results);
 
+        if (!running) return;
+
         if (boxes.length > 0) {
-          setStatus(
-            "Objects detected: " + boxes.length
-          );
+          setStatus("Objects detected: " + boxes.length);
         } else {
           setStatus("No objects detected in this frame.");
         }
 
         setDebug(
+          "Model: " + MODEL_PATH + "\n" +
           "Task: " + (results?.task ?? "not reported") + "\n" +
+          "Actual device: " + (model?.device ?? "unknown") + "\n" +
           "Input size: " +
             (results?.width ?? "?") + " x " +
             (results?.height ?? "?") + "\n" +
-          "Boxes returned: " + boxes.length + "\n" +
-          "Model device: " + (model?.device ?? "unknown") + "\n" +
+          "Objects detected: " + boxes.length + "\n" +
           "Confidence threshold: " + CONFIDENCE + "\n" +
           "IoU threshold: " + IOU + "\n\n" +
-          "Inference details:\n" +
+          "Detection results:\n" +
           JSON.stringify(boxes, null, 2)
         );
+
       } catch (error) {
         console.error("Detection error:", error);
-
         setStatus("Detection error: " + error.message);
-        setDebug(
-          "Detection failed.\n" +
-          (error.stack || error.message)
-        );
+        setDebug(error.stack || error.message);
       } finally {
         detecting = false;
 
         if (running) {
-          // Avoid running another inference before the previous one finishes.
-          setTimeout(detectLoop, 50);
+          loopTimer = setTimeout(detectLoop, 50);
         }
       }
     }
 
-    function stopCamera() {
+    function stopCamera(showMessage = true) {
+      // Invalidate any camera startup still in progress.
+      startRequest++;
       running = false;
+
+      if (loopTimer !== null) {
+        clearTimeout(loopTimer);
+        loopTimer = null;
+      }
 
       if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop());
@@ -397,13 +401,15 @@
       stopButton.disabled = true;
       startButton.disabled = false;
 
-      setStatus("Camera stopped.");
+      if (showMessage) {
+        setStatus("Camera stopped.");
+      }
     }
 
     startButton.addEventListener("click", startCamera);
-    stopButton.addEventListener("click", stopCamera);
+    stopButton.addEventListener("click", () => stopCamera());
 
-    window.addEventListener("pagehide", stopCamera);
+    window.addEventListener("pagehide", () => stopCamera(false));
   </script>
 </body>
 </html>
