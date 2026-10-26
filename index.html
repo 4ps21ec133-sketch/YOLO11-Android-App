@@ -1,9 +1,10 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YOLO11 Object Detection</title>
+  <title>YOLO11 Combined Object Detection</title>
 
   <style>
     * { box-sizing: border-box; }
@@ -30,11 +31,11 @@
       width: 100%;
       max-width: 640px;
       margin: 16px auto;
+      aspect-ratio: 3 / 4;
       overflow: hidden;
       background: #000;
       border: 2px solid #3c5368;
       border-radius: 12px;
-      aspect-ratio: 3 / 4;
     }
 
     video, canvas {
@@ -55,28 +56,15 @@
       border-radius: 8px;
       line-height: 1.5;
       overflow-wrap: anywhere;
-    }
-
-    .controls {
-      max-width: 640px;
-      margin: 14px auto;
-    }
-
-    select, button {
-      padding: 12px;
-      border: 0;
-      border-radius: 8px;
-      font-size: 15px;
-      margin: 5px;
-    }
-
-    select {
-      width: 100%;
-      background: white;
-      color: #101820;
+      white-space: pre-wrap;
     }
 
     button {
+      padding: 12px 20px;
+      margin: 8px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 16px;
       font-weight: bold;
       cursor: pointer;
     }
@@ -113,14 +101,14 @@
       font-size: 12px;
       color: #b9f6ca;
     }
+
+    .note { max-width: 640px; margin: 16px auto; }
   </style>
 
   <script type="importmap">
   {
     "imports": {
-      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo",
-      "@litertjs/core": "https://esm.sh/@litertjs/core",
-      "@litertjs/wasm-utils": "https://esm.sh/@litertjs/wasm-utils"
+      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo"
     }
   }
   </script>
@@ -130,15 +118,7 @@
   <h1>YOLO11 Object Detection</h1>
 
   <div class="subtitle">
-    Camera-based object detection using your available models
-  </div>
-
-  <div class="controls">
-    <label for="modelSelect">Choose detection model:</label>
-    <select id="modelSelect">
-      <option value="tflite">Original model — yolo11n.tflite</option>
-      <option value="onnx">Custom model — best.onnx</option>
-    </select>
+    Combined tree and general object detection
   </div>
 
   <div class="viewer">
@@ -147,95 +127,71 @@
   </div>
 
   <div id="status">Press Start Camera to begin.</div>
-  <div id="modelStatus">Models have not been loaded yet.</div>
+  <div id="modelStatus">Both models have not loaded yet.</div>
 
-  <div class="controls">
-    <button id="startButton">Start Camera & Load Models</button>
-    <button id="stopButton" disabled>Stop Camera</button>
-  </div>
+  <button id="startButton">Start Detection</button>
+  <button id="stopButton" disabled>Stop Camera</button>
 
-  <details open>
+  <details>
     <summary>Detection Diagnostics</summary>
-    <pre id="debug">Waiting for model loading.</pre>
+    <pre id="debug">Waiting for models...</pre>
   </details>
 
   <div class="note">
-    Both model files must be in the same folder as index.html.
-    The selected model is used for detection.
+    Keep best.onnx, yolo11n.tflite and index.html in the same
+    GitHub repository folder. Both models run automatically.
   </div>
 
   <script type="module">
-    import { YOLO, annotate } from "@ultralytics/yolo";
+    import { YOLO } from "@ultralytics/yolo";
 
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
     const statusBox = document.getElementById("status");
     const modelStatus = document.getElementById("modelStatus");
     const debugBox = document.getElementById("debug");
-    const modelSelect = document.getElementById("modelSelect");
     const startButton = document.getElementById("startButton");
     const stopButton = document.getElementById("stopButton");
 
     const MODEL_FILES = {
-      tflite: "./yolo11n.tflite",
-      onnx: "./best.onnx"
+      tree: "./best.onnx",
+      general: "./yolo11n.tflite"
     };
 
-    const CONFIDENCE = 0.25;
+    // Custom tree model: higher threshold to reduce false positives.
+    const TREE_CONFIDENCE = 0.60;
+
+    // General model: retain a lower threshold for everyday objects.
+    const GENERAL_CONFIDENCE = 0.35;
     const IOU = 0.70;
 
-    const models = {
-      tflite: null,
-      onnx: null
-    };
-
-    const modelErrors = {
-      tflite: null,
-      onnx: null
-    };
-
+    let treeModel = null;
+    let generalModel = null;
     let cameraStream = null;
     let running = false;
     let detecting = false;
     let loading = false;
-    let loopTimer = null;
+    let timer = null;
     let requestId = 0;
 
-    function setStatus(message) {
+    function status(message) {
       statusBox.textContent = message;
     }
 
-    function setDebug(message) {
+    function debug(message) {
       debugBox.textContent = message;
     }
 
-    function selectedKey() {
-      return modelSelect.value;
-    }
-
-    function selectedModel() {
-      return models[selectedKey()];
-    }
-
     function updateModelStatus() {
-      const lines = Object.keys(MODEL_FILES).map(key => {
-        const name = MODEL_FILES[key];
-
-        if (models[key]) {
-          return name + ": LOADED";
-        }
-
-        if (modelErrors[key]) {
-          return name + ": FAILED — " + modelErrors[key];
-        }
-
-        return name + ": NOT LOADED";
-      });
-
-      modelStatus.textContent = lines.join("\n");
+      modelStatus.textContent =
+        "Tree model (best.onnx): " +
+        (treeModel ? "LOADED" : "NOT LOADED") + "\n" +
+        "General model (yolo11n.tflite): " +
+        (generalModel ? "LOADED" : "NOT LOADED");
     }
 
-    function updateCanvasSize() {
+    function resizeCanvas() {
       if (!video.videoWidth || !video.videoHeight) return;
 
       if (
@@ -247,105 +203,205 @@
       }
     }
 
-    function clearCanvas() {
-      canvas.getContext("2d").clearRect(
-        0, 0, canvas.width, canvas.height
-      );
-    }
-
-    async function loadOneModel(key) {
-      if (models[key]) return models[key];
-
-      try {
-        setStatus("Loading " + MODEL_FILES[key] + "...");
-
-        const loadedModel = await YOLO.load(MODEL_FILES[key], {
-          device: "cpu"
-        });
-
-        models[key] = loadedModel;
-        modelErrors[key] = null;
-        updateModelStatus();
-
-        return loadedModel;
-      } catch (error) {
-        modelErrors[key] = error.message || String(error);
-        updateModelStatus();
-        console.error("Model loading failed:", key, error);
-        return null;
-      }
-    }
-
-    async function loadAllModels() {
-      if (loading) return;
-
+    async function loadModels() {
       loading = true;
       startButton.disabled = true;
 
       try {
-        // Load sequentially to reduce peak memory use.
-        await loadOneModel("tflite");
-        await loadOneModel("onnx");
+        status("Loading custom tree model...");
+
+        treeModel = await YOLO.load(MODEL_FILES.tree, {
+          device: "cpu"
+        });
 
         updateModelStatus();
 
-        const loadedCount = Object.values(models).filter(Boolean).length;
+        status("Loading general object model...");
 
-        if (loadedCount === 0) {
-          throw new Error(
-            "Neither model loaded. Check the files and browser console."
-          );
-        }
+        generalModel = await YOLO.load(MODEL_FILES.general, {
+          device: "cpu"
+        });
 
-        setDebug(
-          "Model loading report\n\n" +
-          "TFLite file: " + MODEL_FILES.tflite + "\n" +
-          "TFLite loaded: " + Boolean(models.tflite) + "\n" +
-          "TFLite classes:\n" +
-          JSON.stringify(models.tflite?.names ?? "Not exposed", null, 2) +
-          "\n\nONNX file: " + MODEL_FILES.onnx + "\n" +
-          "ONNX loaded: " + Boolean(models.onnx) + "\n" +
-          "ONNX classes:\n" +
-          JSON.stringify(models.onnx?.names ?? "Not exposed", null, 2)
+        updateModelStatus();
+
+        debug(
+          "Both models loaded successfully.\n\n" +
+          "Tree model classes:\n" +
+          JSON.stringify(treeModel.names ?? "Not exposed", null, 2) +
+          "\n\nGeneral model classes:\n" +
+          JSON.stringify(generalModel.names ?? "Not exposed", null, 2)
         );
 
-        if (!selectedModel()) {
-          modelSelect.value = models.tflite ? "tflite" : "onnx";
-        }
-
-        if (cameraStream) {
-          running = true;
-          stopButton.disabled = false;
-          startButton.disabled = true;
-          setStatus("Models loaded. Detecting with " + MODEL_FILES[selectedKey()]);
-          detectLoop();
-        } else {
-          setStatus(
-            loadedCount + " of 2 models loaded. Start the camera to detect."
-          );
-          startButton.disabled = false;
-        }
+        return true;
       } catch (error) {
-        setStatus("Loading error: " + error.message);
-        setDebug(error.stack || error.message);
-        startButton.disabled = false;
+        console.error(error);
+        status("Model loading failed: " + error.message);
+        debug(
+          "Check both filenames and model compatibility.\n\n" +
+          (error.stack || error.message)
+        );
+        return false;
       } finally {
         loading = false;
+        startButton.disabled = Boolean(cameraStream);
+      }
+    }
+
+    function drawDetection(box, color, labelPrefix = "") {
+      const x1 = Number(box.x1);
+      const y1 = Number(box.y1);
+      const x2 = Number(box.x2);
+      const y2 = Number(box.y2);
+
+      if (![x1, y1, x2, y2].every(Number.isFinite)) return;
+
+      const name = String(box.name ?? "Object");
+      const confidence = Number(box.conf);
+      const score = Number.isFinite(confidence)
+        ? " " + (confidence * 100).toFixed(0) + "%"
+        : "";
+
+      const label = labelPrefix + name + score;
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+      ctx.font = "bold 15px Arial";
+
+      const textWidth = ctx.measureText(label).width;
+      const labelHeight = 23;
+      const labelY = Math.max(0, y1 - labelHeight);
+
+      ctx.fillStyle = color;
+      ctx.fillRect(
+        x1,
+        labelY,
+        Math.min(textWidth + 12, canvas.width - x1),
+        labelHeight
+      );
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(label, x1 + 5, labelY + 16);
+    }
+
+    function getBoxes(results) {
+      return Array.isArray(results?.boxes) ? results.boxes : [];
+    }
+
+    async function detectLoop() {
+      if (!running || detecting) return;
+
+      detecting = true;
+
+      try {
+        if (
+          video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+          !treeModel ||
+          !generalModel
+        ) {
+          return;
+        }
+
+        resizeCanvas();
+
+        // Run both models against the SAME camera frame.
+        const [treeResults, generalResults] = await Promise.all([
+          treeModel.predict(video, {
+            conf: TREE_CONFIDENCE,
+            iou: IOU
+          }),
+          generalModel.predict(video, {
+            conf: GENERAL_CONFIDENCE,
+            iou: IOU
+          })
+        ]);
+
+        if (!running) return;
+
+        // Clear the previous frame and draw both result sets together.
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const treeBoxes = getBoxes(treeResults);
+        const generalBoxes = getBoxes(generalResults);
+
+        let treeCount = 0;
+        let generalCount = 0;
+        let ignoredTreeLabels = 0;
+
+        // Custom model: draw detections identified as Tree.
+        // If the model has only one class, treat its detections as Tree.
+        const classNames = treeModel.names;
+        const classCount = classNames
+          ? Object.keys(classNames).length
+          : 0;
+
+        for (const box of treeBoxes) {
+          const name = String(box.name ?? "").trim();
+          const isTree =
+            /tree/i.test(name) ||
+            (!name && classCount === 1) ||
+            (classCount === 1 && Number(box.cls) === 0);
+
+          if (isTree) {
+            drawDetection(box, "#20c878", "");
+            treeCount++;
+          } else {
+            ignoredTreeLabels++;
+          }
+        }
+
+        // Original model: draw its general object detections.
+        for (const box of generalBoxes) {
+          drawDetection(box, "#36a3ff", "");
+          generalCount++;
+        }
+
+        status(
+          "Trees detected: " + treeCount +
+          " | Other model detections: " + generalCount
+        );
+
+        debug(
+          "Both models are running on one camera frame.\n\n" +
+          "Tree model: " + MODEL_FILES.tree + "\n" +
+          "Tree confidence threshold: " + TREE_CONFIDENCE + "\n" +
+          "Tree detections drawn: " + treeCount + "\n" +
+          "Non-tree custom detections ignored: " + ignoredTreeLabels +
+          "\n\nGeneral model: " + MODEL_FILES.general + "\n" +
+          "General confidence threshold: " + GENERAL_CONFIDENCE + "\n" +
+          "General detections drawn: " + generalCount +
+          "\n\nTree model classes:\n" +
+          JSON.stringify(treeModel.names ?? "Not exposed", null, 2) +
+          "\n\nGeneral model classes:\n" +
+          JSON.stringify(generalModel.names ?? "Not exposed", null, 2)
+        );
+
+      } catch (error) {
+        console.error("Detection error:", error);
+        status("Detection error: " + error.message);
+        debug(error.stack || error.message);
+      } finally {
+        detecting = false;
+
+        if (running) {
+          timer = setTimeout(detectLoop, 50);
+        }
       }
     }
 
     async function startCamera() {
-      if (cameraStream || loading) return;
+      if (cameraStream || loading || running) return;
 
       const thisRequest = ++requestId;
       startButton.disabled = true;
 
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error("Open this website using HTTPS in Chrome.");
+          throw new Error("Open the website over HTTPS in Chrome.");
         }
 
-        setStatus("Requesting camera permission...");
+        status("Opening camera...");
 
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -364,102 +420,40 @@
         cameraStream = stream;
         video.srcObject = stream;
         await video.play();
-        updateCanvasSize();
 
-        await loadAllModels();
+        resizeCanvas();
+
+        const loaded = await loadModels();
+
+        if (!loaded || thisRequest !== requestId) {
+          stopCamera(false);
+          startButton.disabled = false;
+          return;
+        }
+
+        running = true;
+        stopButton.disabled = false;
+        startButton.disabled = true;
+
+        status("Both models ready. Detecting trees and other objects...");
+        detectLoop();
+
       } catch (error) {
         console.error(error);
+        status("Could not start: " + error.message);
+        debug(error.stack || error.message);
         stopCamera(false);
-        setStatus("Could not start: " + error.message);
-        setDebug(error.stack || error.message);
         startButton.disabled = false;
       }
     }
-
-    async function detectLoop() {
-      if (!running || detecting) return;
-
-      detecting = true;
-
-      try {
-        const key = selectedKey();
-        const model = selectedModel();
-
-        if (!model) {
-          setStatus(
-            MODEL_FILES[key] + " did not load. Choose the other model."
-          );
-          setDebug(
-            "Selected model failed to load.\n" +
-            String(modelErrors[key] || "Unknown error")
-          );
-          return;
-        }
-
-        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-          return;
-        }
-
-        updateCanvasSize();
-
-        const results = await model.predict(video, {
-          conf: CONFIDENCE,
-          iou: IOU
-        });
-
-        if (!running) return;
-
-        await annotate(canvas, video, results);
-
-        if (!running) return;
-
-        const boxes = Array.isArray(results?.boxes) ? results.boxes : [];
-
-        setStatus(
-          boxes.length
-            ? MODEL_FILES[key] + " — detections: " + boxes.length
-            : MODEL_FILES[key] + " — no objects detected in this frame."
-        );
-
-        setDebug(
-          "Selected model: " + MODEL_FILES[key] + "\n" +
-          "Device: " + (model.device ?? "unknown") + "\n" +
-          "Task: " + (results?.task ?? "not reported") + "\n" +
-          "Detection count: " + boxes.length + "\n" +
-          "Confidence threshold: " + CONFIDENCE + "\n\n" +
-          "Model class information:\n" +
-          JSON.stringify(model.names ?? "Not exposed", null, 2) +
-          "\n\nDetection results:\n" +
-          JSON.stringify(boxes, null, 2)
-        );
-      } catch (error) {
-        console.error("Detection error:", error);
-        setStatus("Detection error: " + error.message);
-        setDebug(error.stack || error.message);
-      } finally {
-        detecting = false;
-
-        if (running) {
-          loopTimer = setTimeout(detectLoop, 50);
-        }
-      }
-    }
-
-    modelSelect.addEventListener("change", () => {
-      clearCanvas();
-
-      if (running) {
-        setStatus("Switching to " + MODEL_FILES[selectedKey()] + "...");
-      }
-    });
 
     function stopCamera(showMessage = true) {
       requestId++;
       running = false;
 
-      if (loopTimer !== null) {
-        clearTimeout(loopTimer);
-        loopTimer = null;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
       }
 
       if (cameraStream) {
@@ -469,14 +463,13 @@
 
       video.pause();
       video.srcObject = null;
-      clearCanvas();
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       stopButton.disabled = true;
       startButton.disabled = loading;
 
-      if (showMessage) {
-        setStatus("Camera stopped. Loaded models remain available.");
-      }
+      if (showMessage) status("Camera stopped.");
     }
 
     startButton.addEventListener("click", startCamera);
