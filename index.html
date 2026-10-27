@@ -1,503 +1,455 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YOLO11 Object Detection</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autonomous Robot Object Detection</title>
 
-  <style>
-    * { box-sizing: border-box; }
+<style>
+* { box-sizing: border-box; }
 
-    body {
-      margin: 0;
-      padding: 16px;
-      background: #101820;
-      color: white;
-      font-family: Arial, sans-serif;
-      text-align: center;
-    }
+body {
+  margin: 0;
+  padding: 16px;
+  background: #101820;
+  color: white;
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
 
-    h1 { font-size: 24px; }
+h1 { font-size: 24px; }
 
-    .subtitle, .note {
-      color: #c6d1dc;
-      font-size: 14px;
-      line-height: 1.6;
-    }
+.subtitle, .note {
+  color: #c6d1dc;
+  font-size: 14px;
+  line-height: 1.6;
+}
 
-    .viewer {
-      position: relative;
-      width: 100%;
-      max-width: 640px;
-      margin: 16px auto;
-      aspect-ratio: 3 / 4;
-      overflow: hidden;
-      background: black;
-      border: 2px solid #3c5368;
-      border-radius: 12px;
-    }
+.viewer {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  margin: 16px auto;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: black;
+  border: 2px solid #3c5368;
+  border-radius: 12px;
+}
 
-    video, canvas {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
+video, canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 
-    canvas { pointer-events: none; }
+canvas { pointer-events: none; }
 
-    #status, #modelStatus {
-      max-width: 640px;
-      margin: 12px auto;
-      padding: 12px;
-      background: #243447;
-      border-radius: 8px;
-      line-height: 1.5;
-      overflow-wrap: anywhere;
-      white-space: pre-wrap;
-    }
+#status, #modelStatus, #debug {
+  max-width: 640px;
+  margin: 12px auto;
+  padding: 12px;
+  background: #243447;
+  border-radius: 8px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 
-    button {
-      padding: 12px 20px;
-      margin: 8px;
-      border: 0;
-      border-radius: 8px;
-      font-size: 16px;
-      font-weight: bold;
-      cursor: pointer;
-    }
+button {
+  padding: 12px 20px;
+  margin: 8px;
+  border: 0;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
 
-    #startButton {
-      background: #20c878;
-      color: #061c12;
-    }
+#startButton {
+  background: #20c878;
+  color: #061c12;
+}
 
-    #stopButton {
-      background: #e35d6a;
-      color: white;
-    }
+#stopButton {
+  background: #e35d6a;
+  color: white;
+}
 
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-    details {
-      max-width: 640px;
-      margin: 16px auto;
-      padding: 12px;
-      text-align: left;
-      background: #1b2836;
-      border-radius: 8px;
-    }
+details {
+  max-width: 640px;
+  margin: 16px auto;
+  padding: 12px;
+  text-align: left;
+  background: #1b2836;
+  border-radius: 8px;
+}
 
-    summary { cursor: pointer; font-weight: bold; }
+summary { cursor: pointer; font-weight: bold; }
 
-    pre {
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      font-size: 12px;
-      color: #b9f6ca;
-    }
+.note { max-width: 640px; margin: 16px auto; }
+</style>
 
-    .note { max-width: 640px; margin: 16px auto; }
-  </style>
-
-  <script type="importmap">
-  {
-    "imports": {
-      "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo",
-      "@litertjs/core": "https://esm.sh/@litertjs/core",
-      "@litertjs/wasm-utils": "https://esm.sh/@litertjs/wasm-utils"
-    }
+<script type="importmap">
+{
+  "imports": {
+    "@ultralytics/yolo": "https://esm.sh/@ultralytics/yolo",
+    "@litertjs/core": "https://esm.sh/@litertjs/core",
+    "@litertjs/wasm-utils": "https://esm.sh/@litertjs/wasm-utils"
   }
-  </script>
+}
+</script>
 </head>
 
 <body>
-  <h1>YOLO11 Object Detection</h1>
+<h1>Autonomous Robot Detection</h1>
 
-  <div class="subtitle">
-    Tree and general object detection
-  </div>
+<div class="subtitle">
+  General objects + trees + optional trained rock model
+</div>
 
-  <div class="viewer">
-    <video id="video" autoplay muted playsinline></video>
-    <canvas id="canvas"></canvas>
-  </div>
+<div class="viewer">
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="canvas"></canvas>
+</div>
 
-  <div id="status">Press Start Detection to begin.</div>
-  <div id="modelStatus">Models not loaded.</div>
+<div id="status">Press Start Detection.</div>
+<div id="modelStatus">Models not loaded.</div>
 
-  <button id="startButton">Start Detection</button>
-  <button id="stopButton" disabled>Stop Camera</button>
+<button id="startButton">Start Detection</button>
+<button id="stopButton" disabled>Stop Camera</button>
 
-  <details>
-    <summary>Detection Diagnostics</summary>
-    <pre id="debug">Waiting for models.</pre>
-  </details>
+<details>
+  <summary>Detection Diagnostics</summary>
+  <pre id="debug">Waiting for models.</pre>
+</details>
 
-  <div class="note">
-    Place index.html, best.onnx and yolo11n.tflite
-    in the same repository folder.
-  </div>
+<div class="note">
+  Keep index.html, yolo11n.tflite and tree.onnx in this folder.
+  Add rock.onnx when you have a model trained on rocks and stones.
+</div>
 
-  <script type="module">
-    const video = document.getElementById("video");
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-    const statusBox = document.getElementById("status");
-    const modelStatus = document.getElementById("modelStatus");
-    const debugBox = document.getElementById("debug");
-    const startButton = document.getElementById("startButton");
-    const stopButton = document.getElementById("stopButton");
+<script type="module">
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const statusBox = document.getElementById("status");
+const modelStatus = document.getElementById("modelStatus");
+const debugBox = document.getElementById("debug");
+const startButton = document.getElementById("startButton");
+const stopButton = document.getElementById("stopButton");
 
-    const MODEL_FILES = {
-      tree: "./best.onnx",
-      general: "./yolo11n.tflite"
+// Filenames must match the files in your GitHub repository.
+const MODEL_FILES = {
+  general: "./yolo11n.tflite",
+  tree: "./tree.onnx",
+  rock: "./rock.onnx"
+};
+
+const CONFIDENCE = 0.30;
+const IOU = 0.70;
+const INTERVAL = 150;
+
+let YOLO = null;
+let models = {};
+let stream = null;
+let running = false;
+let detecting = false;
+let loading = false;
+let timer = null;
+let requestId = 0;
+
+function setStatus(text) {
+  statusBox.textContent = text;
+}
+
+function setDebug(text) {
+  debugBox.textContent = text;
+}
+
+function updateModelStatus() {
+  modelStatus.textContent = Object.keys(MODEL_FILES)
+    .map(key => key + " model: " +
+      (models[key] ? "LOADED" : "NOT LOADED"))
+    .join("\n");
+}
+
+function resizeCanvas() {
+  if (!video.videoWidth || !video.videoHeight) return;
+  if (canvas.width !== video.videoWidth ||
+      canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
+}
+
+async function loadModels() {
+  if (loading) return false;
+  loading = true;
+
+  try {
+    setStatus("Loading AI library...");
+    const module = await import("@ultralytics/yolo");
+    YOLO = module.YOLO;
+
+    if (!YOLO) throw new Error("YOLO library export not found.");
+
+    const errors = [];
+
+    for (const key of Object.keys(MODEL_FILES)) {
+      if (models[key]) continue;
+
+      setStatus("Loading " + key + " model: " + MODEL_FILES[key]);
+
+      try {
+        models[key] = await YOLO.load(MODEL_FILES[key], {
+          device: "cpu"
+        });
+      } catch (error) {
+        errors.push(key + ": " + error.message);
+      }
+
+      updateModelStatus();
+    }
+
+    const loaded = Object.keys(models);
+    const descriptions = loaded.map(key =>
+      key + " classes:\n" +
+      JSON.stringify(models[key].names ?? "Unknown", null, 2)
+    );
+
+    setDebug(
+      "Loaded models:\n" + (loaded.join(", ") || "None") +
+      "\n\n" + descriptions.join("\n\n") +
+      "\n\nErrors:\n" + (errors.join("\n") || "None")
+    );
+
+    if (!models.general && !models.tree && !models.rock) {
+      throw new Error("No models loaded. See Diagnostics.");
+    }
+
+    if (!models.rock) {
+      setStatus(
+        "Warning: rock model not loaded. General and tree " +
+        "detection can run, but rock detection is unavailable."
+      );
+    }
+
+    return true;
+  } finally {
+    loading = false;
+    updateModelStatus();
+  }
+}
+
+function drawBox(box, color, modelName) {
+  const x1 = Number(box.x1);
+  const y1 = Number(box.y1);
+  const x2 = Number(box.x2);
+  const y2 = Number(box.y2);
+
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return;
+
+  const left = Math.max(0, Math.min(canvas.width, x1));
+  const top = Math.max(0, Math.min(canvas.height, y1));
+  const right = Math.max(0, Math.min(canvas.width, x2));
+  const bottom = Math.max(0, Math.min(canvas.height, y2));
+
+  if (right <= left || bottom <= top) return;
+
+  const name = String(box.name || "Object");
+  const conf = Number(box.conf);
+  const score = Number.isFinite(conf)
+    ? " " + Math.round(conf * 100) + "%"
+    : "";
+
+  const label = modelName + ": " + name + score;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(left, top, right - left, bottom - top);
+
+  ctx.font = "bold 14px Arial";
+  const labelWidth = Math.min(
+    ctx.measureText(label).width + 10,
+    canvas.width - left
+  );
+  const labelY = Math.max(0, top - 23);
+
+  ctx.fillStyle = color;
+  ctx.fillRect(left, labelY, labelWidth, 23);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(label, left + 5, labelY + 16);
+}
+
+function getBoxes(results) {
+  return Array.isArray(results?.boxes) ? results.boxes : [];
+}
+
+async function detectLoop() {
+  if (!running || detecting) return;
+  detecting = true;
+  let delay = INTERVAL;
+
+  try {
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      delay = 250;
+      return;
+    }
+
+    resizeCanvas();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const counts = {};
+    const diagnostics = [];
+
+    // Run models one at a time to reduce memory use on phones.
+    const colors = {
+      general: "#36a3ff",
+      tree: "#20c878",
+      rock: "#ffb020"
     };
 
-    const TREE_CONFIDENCE = 0.25;
-    const GENERAL_CONFIDENCE = 0.25;
-    const IOU = 0.70;
-    const DETECTION_INTERVAL = 100;
-
-    let YOLO;
-    let treeModel = null;
-    let generalModel = null;
-    let cameraStream = null;
-    let running = false;
-    let detecting = false;
-    let loading = false;
-    let timer = null;
-    let requestId = 0;
-    let lastDetectionTime = 0;
-
-    function setStatus(message) {
-      statusBox.textContent = message;
-    }
-
-    function setDebug(message) {
-      debugBox.textContent = message;
-    }
-
-    function updateModelStatus() {
-      modelStatus.textContent =
-        "Tree model: " + (treeModel ? "LOADED" : "NOT LOADED") + "\n" +
-        "General model: " +
-        (generalModel ? "LOADED" : "NOT LOADED");
-    }
-
-    function resizeCanvas() {
-      if (!video.videoWidth || !video.videoHeight) return;
-
-      if (
-        canvas.width !== video.videoWidth ||
-        canvas.height !== video.videoHeight
-      ) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
-    }
-
-    async function loadModels() {
-      if (treeModel && generalModel) return true;
-      if (loading) return false;
-
-      loading = true;
-      startButton.disabled = true;
+    for (const key of ["general", "tree", "rock"]) {
+      const model = models[key];
+      if (!model) continue;
 
       try {
-        if (!YOLO) {
-          setStatus("Loading detection library...");
-          const module = await import("@ultralytics/yolo");
-          YOLO = module.YOLO;
-        }
-
-        if (!treeModel) {
-          setStatus("Loading best.onnx...");
-          treeModel = await YOLO.load(MODEL_FILES.tree, {
-            device: "cpu"
-          });
-          updateModelStatus();
-        }
-
-        if (!generalModel) {
-          setStatus("Loading yolo11n.tflite...");
-          generalModel = await YOLO.load(MODEL_FILES.general, {
-            device: "cpu"
-          });
-          updateModelStatus();
-        }
-
-        setDebug(
-          "Models loaded.\n\nTree model classes:\n" +
-          JSON.stringify(treeModel.names ?? "Not available", null, 2) +
-          "\n\nGeneral model classes:\n" +
-          JSON.stringify(generalModel.names ?? "Not available", null, 2)
-        );
-
-        return true;
-      } catch (error) {
-        console.error("Model loading error:", error);
-        setStatus("Model loading failed:\n" + error.message);
-        setDebug(error.stack || String(error));
-        return false;
-      } finally {
-        loading = false;
-        startButton.disabled = Boolean(cameraStream) || running;
-      }
-    }
-
-    function drawBox(box, color) {
-      const x1 = Number(box.x1);
-      const y1 = Number(box.y1);
-      const x2 = Number(box.x2);
-      const y2 = Number(box.y2);
-
-      if (![x1, y1, x2, y2].every(Number.isFinite)) return;
-
-      const left = Math.max(0, Math.min(canvas.width, x1));
-      const top = Math.max(0, Math.min(canvas.height, y1));
-      const right = Math.max(0, Math.min(canvas.width, x2));
-      const bottom = Math.max(0, Math.min(canvas.height, y2));
-
-      if (right <= left || bottom <= top) return;
-
-      const name = String(box.name || "Object");
-      const confidence = Number(box.conf);
-      const score = Number.isFinite(confidence)
-        ? " " + Math.round(confidence * 100) + "%"
-        : "";
-
-      const label = name + score;
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(left, top, right - left, bottom - top);
-
-      ctx.font = "bold 15px Arial";
-
-      const labelWidth = Math.min(
-        ctx.measureText(label).width + 12,
-        canvas.width - left
-      );
-      const labelY = Math.max(0, top - 24);
-
-      ctx.fillStyle = color;
-      ctx.fillRect(left, labelY, labelWidth, 24);
-
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(label, left + 5, labelY + 17);
-    }
-
-    function getBoxes(results) {
-      return Array.isArray(results?.boxes) ? results.boxes : [];
-    }
-
-    function isTreeDetection(box) {
-      const name = String(box.name || "").trim();
-      const names = treeModel?.names;
-      const classCount = names
-        ? Object.keys(names).length
-        : 0;
-
-      return /tree/i.test(name) ||
-        (classCount === 1 && Number(box.cls) === 0);
-    }
-
-    async function detectLoop() {
-      if (!running || detecting) return;
-
-      detecting = true;
-      let nextDelay = DETECTION_INTERVAL;
-
-      try {
-        if (
-          video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
-          !treeModel ||
-          !generalModel
-        ) {
-          nextDelay = 250;
-          return;
-        }
-
-        resizeCanvas();
-
-        const [treeResults, generalResults] = await Promise.all([
-          treeModel.predict(video, {
-            conf: TREE_CONFIDENCE,
-            iou: IOU
-          }),
-          generalModel.predict(video, {
-            conf: GENERAL_CONFIDENCE,
-            iou: IOU
-          })
-        ]);
+        const results = await model.predict(video, {
+          conf: CONFIDENCE,
+          iou: IOU
+        });
 
         if (!running) return;
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const boxes = getBoxes(results);
+        counts[key] = boxes.length;
 
-        const treeBoxes = getBoxes(treeResults);
-        const generalBoxes = getBoxes(generalResults);
-
-        let treeCount = 0;
-        let generalCount = 0;
-
-        for (const box of treeBoxes) {
-          if (isTreeDetection(box)) {
-            drawBox(box, "#20c878");
-            treeCount++;
-          }
+        for (const box of boxes) {
+          drawBox(box, colors[key], key.toUpperCase());
         }
 
-        for (const box of generalBoxes) {
-          drawBox(box, "#36a3ff");
-          generalCount++;
-        }
-
-        lastDetectionTime = Date.now();
-
-        setStatus(
-          "Trees: " + treeCount +
-          " | General detections: " + generalCount +
-          "\nTree confidence: " + TREE_CONFIDENCE +
-          " | General confidence: " + GENERAL_CONFIDENCE +
-          " | IoU: " + IOU
+        diagnostics.push(
+          key + ": " + boxes.length + " detections; classes = " +
+          JSON.stringify(model.names ?? "unknown")
         );
-
-        setDebug(
-          "Detection running successfully.\n\n" +
-          "Tree model: " + MODEL_FILES.tree +
-          "\nTree boxes returned: " + treeBoxes.length +
-          "\nTree boxes drawn: " + treeCount +
-          "\nGeneral boxes returned: " + generalBoxes.length +
-          "\nGeneral boxes drawn: " + generalCount +
-          "\n\nTree classes:\n" +
-          JSON.stringify(treeModel.names ?? "Unknown", null, 2) +
-          "\n\nGeneral classes:\n" +
-          JSON.stringify(generalModel.names ?? "Unknown", null, 2)
-        );
-
       } catch (error) {
-        console.error("Detection error:", error);
-        setStatus("Detection error: " + error.message);
-        setDebug(error.stack || String(error));
-        nextDelay = 500;
-      } finally {
-        detecting = false;
-
-        if (running) {
-          timer = setTimeout(detectLoop, nextDelay);
-        }
+        diagnostics.push(key + " prediction error: " + error.message);
       }
     }
 
-    async function startCamera() {
-      if (cameraStream || loading || running) return;
+    setStatus(
+      "General objects: " + (counts.general ?? 0) +
+      " | Trees: " + (counts.tree ?? 0) +
+      " | Rocks: " + (counts.rock ?? 0) +
+      (models.rock ? "" : "\nRock model not loaded.")
+    );
 
-      const thisRequest = ++requestId;
-      startButton.disabled = true;
+    setDebug(diagnostics.join("\n\n"));
+  } catch (error) {
+    setStatus("Detection error: " + error.message);
+    setDebug(error.stack || String(error));
+    delay = 500;
+  } finally {
+    detecting = false;
+    if (running) timer = setTimeout(detectLoop, delay);
+  }
+}
 
-      try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error(
-            "Camera access is unavailable. Open this page using HTTPS."
-          );
-        }
+async function startCamera() {
+  if (stream || loading || running) return;
 
-        setStatus("Requesting camera permission...");
+  const id = ++requestId;
+  startButton.disabled = true;
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 640 },
-            height: { ideal: 640 }
-          }
-        });
-
-        if (thisRequest !== requestId) {
-          stream.getTracks().forEach(track => track.stop());
-          return;
-        }
-
-        cameraStream = stream;
-        video.srcObject = stream;
-
-        await video.play();
-
-        if (thisRequest !== requestId) return;
-
-        setStatus("Camera opened. Loading AI models...");
-
-        const loaded = await loadModels();
-
-        if (thisRequest !== requestId) return;
-
-        if (!loaded) {
-          // Keep the camera running so the error remains visible.
-          stopButton.disabled = false;
-          startButton.disabled = false;
-          setStatus(
-            "Camera is open, but a model failed to load. " +
-            "Read Detection Diagnostics for the error."
-          );
-          return;
-        }
-
-        running = true;
-        stopButton.disabled = false;
-        startButton.disabled = true;
-
-        setStatus("Models ready. Detecting objects...");
-        detectLoop();
-
-      } catch (error) {
-        console.error("Camera start error:", error);
-        setStatus("Could not start camera:\n" + error.message);
-        setDebug(error.stack || String(error));
-
-        stopCamera(false);
-        startButton.disabled = false;
-      }
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Open this page using HTTPS to access the camera.");
     }
 
-    function stopCamera(showMessage = true) {
-      requestId++;
-      running = false;
+    setStatus("Requesting camera permission...");
 
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 640 },
+        height: { ideal: 640 }
       }
-
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-        cameraStream = null;
-      }
-
-      video.pause();
-      video.srcObject = null;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      stopButton.disabled = true;
-      startButton.disabled = loading;
-
-      if (showMessage) setStatus("Camera stopped.");
-    }
-
-    startButton.addEventListener("click", startCamera);
-    stopButton.addEventListener("click", () => stopCamera());
-
-    window.addEventListener("pagehide", () => {
-      stopCamera(false);
     });
 
-    updateModelStatus();
-  </script>
+    if (id !== requestId) {
+      newStream.getTracks().forEach(track => track.stop());
+      return;
+    }
+
+    stream = newStream;
+    video.srcObject = stream;
+    await video.play();
+
+    if (id !== requestId) return;
+
+    setStatus("Camera ready. Loading models...");
+
+    let loaded;
+    try {
+      loaded = await loadModels();
+    } catch (error) {
+      setDebug(error.stack || String(error));
+      throw error;
+    }
+
+    if (id !== requestId) return;
+    if (!loaded) throw new Error("No models loaded.");
+
+    running = true;
+    stopButton.disabled = false;
+    startButton.disabled = true;
+
+    detectLoop();
+  } catch (error) {
+    setStatus("Startup error: " + error.message);
+    if (id === requestId) stopCamera(false);
+    startButton.disabled = false;
+  }
+}
+
+function stopCamera(showMessage = true) {
+  requestId++;
+  running = false;
+
+  if (timer !== null) {
+    clearTimeout(timer);
+    timer = null;
+  }
+
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+
+  video.pause();
+  video.srcObject = null;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  stopButton.disabled = true;
+  startButton.disabled = loading;
+
+  if (showMessage) setStatus("Camera stopped.");
+}
+
+startButton.addEventListener("click", startCamera);
+stopButton.addEventListener("click", () => stopCamera());
+window.addEventListener("pagehide", () => stopCamera(false));
+
+updateModelStatus();
+</script>
 </body>
 </html>
