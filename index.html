@@ -92,7 +92,10 @@
       text-align: left;
     }
 
-    summary { cursor: pointer; font-weight: bold; }
+    summary {
+      cursor: pointer;
+      font-weight: bold;
+    }
 
     .legend {
       max-width: 640px;
@@ -125,7 +128,7 @@
   <h1>Autonomous Robot Detection</h1>
 
   <p class="subtitle">
-    General Objects + Tree Detection + Rock Detection
+    General Objects + Car Detection + Rock Detection
   </p>
 
   <div class="viewer">
@@ -140,9 +143,8 @@
   <button id="stopButton" disabled>Stop Camera</button>
 
   <div class="legend">
-    <div>🔵 Blue: General objects</div>
-    <div>🟢 Green: Trees</div>
-    <div>🟠 Orange: Rocks</div>
+    <div>🔵 Blue: General-object model</div>
+    <div>🟠 Orange: Custom car and rock model</div>
   </div>
 
   <details>
@@ -151,10 +153,10 @@
   </details>
 
   <p class="note">
-    This page uses three separate models. The class names and
-    detection quality depend on how each model was trained.
-    A model loading successfully does not guarantee that it
-    will recognize every object.
+    Two models are used independently. The general model keeps its
+    original classes. The custom model detects the car and rock classes
+    it was trained on. Detection quality depends on the training data.
+    This page is for detection testing, not autonomous driving safety.
   </p>
 
 <script type="module">
@@ -168,24 +170,23 @@ const debugBox = document.getElementById("debug");
 const startButton = document.getElementById("startButton");
 const stopButton = document.getElementById("stopButton");
 
-// Exact filenames in your GitHub repository.
-// Spaces in "best (1).onnx" are URL-encoded as %20.
+// These files must exist in the root of the GitHub repository.
 const MODEL_FILES = {
   general: "./yolo11n.tflite",
-  tree: "./best.onnx",
-  rock: "./best%20(1).onnx"
+  carRock: "./best.onnx"
 };
 
-const CONFIDENCE = 0.50;
+const CONFIDENCE = 0.40;
 const IOU = 0.50;
+
 const COLORS = {
   general: "#36a3ff",
-  tree: "#20c878",
-  rock: "#ffb020"
+  carRock: "#ffb020"
 };
 
 let YOLO = null;
-let models = {};
+const models = {};
+
 let stream = null;
 let running = false;
 let loading = false;
@@ -203,10 +204,11 @@ function setDebug(message) {
 
 function updateModelStatus() {
   modelStatus.textContent = Object.keys(MODEL_FILES)
-    .map(key =>
-      key + ": " + (models[key] ? "LOADED" : "NOT LOADED")
-    )
-    .join("\n");
+    .map(key => {
+      const state = models[key] ? "LOADED" : "NOT LOADED";
+      return key + ": " + state + "\nFile: " + MODEL_FILES[key];
+    })
+    .join("\n\n");
 }
 
 function resizeCanvas() {
@@ -234,28 +236,25 @@ async function loadModels() {
     YOLO = module.YOLO;
 
     if (!YOLO) {
-      throw new Error("YOLO export was not found in the AI library.");
+      throw new Error("YOLO library did not provide YOLO.load.");
     }
 
     for (const key of Object.keys(MODEL_FILES)) {
       if (models[key]) continue;
 
       const filename = MODEL_FILES[key];
-
       setStatus("Loading " + key + " model: " + filename);
 
       try {
-        // Load each model separately so one failure does not
-        // prevent the other models from loading.
         models[key] = await YOLO.load(filename, {
           device: "cpu"
         });
 
-        console.log(key + " model loaded:", models[key]);
+        console.log("Loaded model:", key, models[key]);
       } catch (error) {
         errors.push(
           key + " (" + filename + "): " +
-          (error?.message || String(error))
+          (error?.stack || error?.message || String(error))
         );
       }
 
@@ -265,32 +264,28 @@ async function loadModels() {
     const loadedNames = Object.keys(models);
 
     const classInfo = loadedNames.map(key =>
-      key + " model classes:\n" +
+      key + " classes:\n" +
       JSON.stringify(models[key].names ?? "Unknown", null, 2)
     );
 
     setDebug(
-      "Loaded models: " +
-      (loadedNames.join(", ") || "None") +
-      "\n\n" +
-      classInfo.join("\n\n") +
-      "\n\nLoading errors:\n" +
-      (errors.join("\n") || "None")
+      "Loaded models: " + (loadedNames.join(", ") || "None") +
+      "\n\n" + classInfo.join("\n\n") +
+      "\n\nLoading errors:\n" + (errors.join("\n\n") || "None")
     );
 
     if (loadedNames.length === 0) {
       throw new Error(
-        "No models loaded. Open Detection Diagnostics for errors."
+        "Neither model loaded. Open Detection Diagnostics."
       );
     }
 
-    if (!models.rock) {
-      setStatus(
-        "Warning: Rock model failed to load. " +
-        "General and tree detection can still run."
-      );
+    if (models.general && models.carRock) {
+      setStatus("Both models loaded. Starting detection...");
     } else {
-      setStatus("Models loaded. Starting detection...");
+      setStatus(
+        "Only one model loaded. Check Detection Diagnostics for errors."
+      );
     }
   } finally {
     loading = false;
@@ -350,7 +345,7 @@ async function detectLoop() {
   if (!running || detecting) return;
 
   detecting = true;
-  let delay = 150;
+  let delay = 100;
 
   try {
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -364,8 +359,8 @@ async function detectLoop() {
     const counts = {};
     const diagnostics = [];
 
-    // Run models one at a time to reduce phone memory usage.
-    for (const key of ["general", "tree", "rock"]) {
+    // Run sequentially to reduce memory pressure on phones.
+    for (const key of ["general", "carRock"]) {
       const model = models[key];
 
       if (!model) {
@@ -397,20 +392,20 @@ async function detectLoop() {
         counts[key] = null;
 
         diagnostics.push(
-          key.toUpperCase() + " prediction error: " +
-          (error?.message || String(error))
+          key.toUpperCase() + " prediction error:\n" +
+          (error?.stack || error?.message || String(error))
         );
       }
     }
 
     const countText = value =>
-      value === null || value === undefined ? "Unavailable" : value;
+      value === null || value === undefined
+        ? "Unavailable"
+        : value;
 
     setStatus(
-      "General objects: " + countText(counts.general) +
-      "\nTrees: " + countText(counts.tree) +
-      "\nRocks: " + countText(counts.rock) +
-      (models.rock ? "" : "\nRock model was not loaded.")
+      "General-object detections: " + countText(counts.general) +
+      "\nCar/rock model detections: " + countText(counts.carRock)
     );
 
     setDebug(
@@ -440,7 +435,7 @@ async function startCamera() {
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error(
-        "Camera access requires HTTPS. Open the GitHub Pages website."
+        "Camera access requires HTTPS. Open your GitHub Pages website."
       );
     }
 
@@ -476,13 +471,13 @@ async function startCamera() {
 
     running = true;
     stopButton.disabled = false;
-
     detectLoop();
   } catch (error) {
     setStatus("Startup error: " + (error?.message || String(error)));
+
     setDebug(
       (error?.stack || String(error)) +
-      "\n\nCheck filenames, model format, network access, and browser console."
+      "\n\nCheck model filenames, browser console, and model-format support."
     );
 
     if (id === requestId) {
