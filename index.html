@@ -46,7 +46,7 @@
 
     canvas { pointer-events: none; }
 
-    #status, #modelStatus, #debug {
+    #status, #modelStatus, #debug, #bleStatus {
       max-width: 640px;
       margin: 12px auto;
       padding: 12px;
@@ -75,6 +75,16 @@
 
     #stopButton {
       background: #e35d6a;
+      color: white;
+    }
+
+    #connectBleButton {
+      background: #3987e8;
+      color: white;
+    }
+
+    #disconnectBleButton {
+      background: #526477;
       color: white;
     }
 
@@ -125,6 +135,7 @@
 </head>
 
 <body>
+
   <h1>Autonomous Robot Detection</h1>
 
   <p class="subtitle">
@@ -137,10 +148,25 @@
   </div>
 
   <div id="status">Press Start Detection.</div>
-  <div id="modelStatus">Models have not been loaded yet.</div>
+
+  <div id="modelStatus">
+    Models have not been loaded yet.
+  </div>
 
   <button id="startButton">Start Detection</button>
   <button id="stopButton" disabled>Stop Camera</button>
+
+  <!-- BLE BUTTONS -->
+  <div>
+    <button id="connectBleButton">Connect Robot BLE</button>
+    <button id="disconnectBleButton" disabled>
+      Disconnect Robot
+    </button>
+  </div>
+
+  <div id="bleStatus">
+    Robot BLE: Not connected.
+  </div>
 
   <div class="legend">
     <div>🔵 Blue: General-object model</div>
@@ -160,6 +186,11 @@
   </p>
 
 <script type="module">
+
+// ==========================================
+// 1. GET HTML ELEMENTS
+// ==========================================
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -167,10 +198,48 @@ const ctx = canvas.getContext("2d");
 const statusBox = document.getElementById("status");
 const modelStatus = document.getElementById("modelStatus");
 const debugBox = document.getElementById("debug");
+
 const startButton = document.getElementById("startButton");
 const stopButton = document.getElementById("stopButton");
 
-// These files must exist in the root of the GitHub repository.
+const connectBleButton =
+  document.getElementById("connectBleButton");
+
+const disconnectBleButton =
+  document.getElementById("disconnectBleButton");
+
+const bleStatus =
+  document.getElementById("bleStatus");
+
+
+// ==========================================
+// 2. BLE SETTINGS
+// Must match ESP32 transmitter code
+// ==========================================
+
+const BLE_DEVICE_NAME = "Robot_Receiver";
+
+const BLE_SERVICE_UUID =
+  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
+
+const BLE_WRITE_UUID =
+  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
+
+
+let bleDevice = null;
+let bleServer = null;
+let bleWriteCharacteristic = null;
+
+let lastRobotMessage = "";
+let lastRobotMessageTime = 0;
+
+let bleWriteInProgress = false;
+
+
+// ==========================================
+// 3. MODEL SETTINGS
+// ==========================================
+
 const MODEL_FILES = {
   general: "./yolo11n.tflite",
   carRock: "./best.onnx"
@@ -185,73 +254,413 @@ const COLORS = {
 };
 
 let YOLO = null;
+
 const models = {};
+
+
+// ==========================================
+// 4. CAMERA VARIABLES
+// ==========================================
 
 let stream = null;
 let running = false;
 let loading = false;
 let detecting = false;
+
 let timer = null;
 let requestId = 0;
 
+
+// ==========================================
+// 5. BLE STATUS
+// ==========================================
+
+function setBleStatus(message) {
+  bleStatus.textContent = "Robot BLE: " + message;
+}
+
+
+function updateBleButtons() {
+
+  const connected = Boolean(
+    bleDevice &&
+    bleDevice.gatt &&
+    bleDevice.gatt.connected &&
+    bleWriteCharacteristic
+  );
+
+  connectBleButton.disabled = connected;
+  disconnectBleButton.disabled = !connected;
+}
+
+
+// ==========================================
+// 6. BLE DISCONNECTED
+// ==========================================
+
+function handleBleDisconnected() {
+
+  bleServer = null;
+  bleWriteCharacteristic = null;
+
+  lastRobotMessage = "";
+
+  setBleStatus(
+    "Disconnected. Connect again before controlling the robot."
+  );
+
+  updateBleButtons();
+}
+
+
+// ==========================================
+// 7. CONNECT ROBOT USING BLE
+// ==========================================
+
+async function connectRobotBle() {
+
+  if (!navigator.bluetooth) {
+
+    setBleStatus(
+      "Web Bluetooth is unavailable. Use Chrome over HTTPS."
+    );
+
+    return;
+  }
+
+  connectBleButton.disabled = true;
+
+  try {
+
+    setBleStatus(
+      "Choose Robot_Receiver from the Bluetooth device list..."
+    );
+
+    bleDevice = await navigator.bluetooth.requestDevice({
+
+      filters: [
+        { name: BLE_DEVICE_NAME }
+      ],
+
+      optionalServices: [
+        BLE_SERVICE_UUID
+      ]
+
+    });
+
+    bleDevice.addEventListener(
+      "gattserverdisconnected",
+      handleBleDisconnected
+    );
+
+    setBleStatus("Connecting to robot...");
+
+    bleServer = await bleDevice.gatt.connect();
+
+    const service =
+      await bleServer.getPrimaryService(BLE_SERVICE_UUID);
+
+    bleWriteCharacteristic =
+      await service.getCharacteristic(BLE_WRITE_UUID);
+
+    lastRobotMessage = "";
+    lastRobotMessageTime = 0;
+
+    setBleStatus(
+      "Connected to Robot_Receiver. Robot is stopped."
+    );
+
+    updateBleButtons();
+
+    // Stop robot immediately after connecting.
+    await sendRobotMessage("STOP", true);
+
+  }
+
+  catch (error) {
+
+    setBleStatus(
+      "Connection failed: " +
+      (error?.message || String(error))
+    );
+
+    bleWriteCharacteristic = null;
+
+    updateBleButtons();
+  }
+
+  finally {
+
+    updateBleButtons();
+  }
+}
+
+
+// ==========================================
+// 8. DISCONNECT ROBOT
+// ==========================================
+
+async function disconnectRobotBle() {
+
+  // Send STOP before disconnecting.
+  await sendRobotMessage("STOP", true);
+
+  if (bleDevice?.gatt?.connected) {
+
+    bleDevice.gatt.disconnect();
+
+  } else {
+
+    handleBleDisconnected();
+  }
+}
+
+
+// ==========================================
+// 9. SEND DATA THROUGH BLE
+// ==========================================
+
+async function sendRobotMessage(message, force = false) {
+
+  if (
+    !bleWriteCharacteristic ||
+    !bleDevice?.gatt?.connected
+  ) {
+    return false;
+  }
+
+  const now = Date.now();
+
+  const isNewState =
+    message !== lastRobotMessage;
+
+  const heartbeatDue =
+    now - lastRobotMessageTime >= 1000;
+
+  // Send when the state changes.
+  // Repeat the same command every second.
+  if (
+    !force &&
+    !isNewState &&
+    !heartbeatDue
+  ) {
+    return true;
+  }
+
+  // Prevent overlapping BLE writes.
+  if (bleWriteInProgress) {
+    return false;
+  }
+
+  bleWriteInProgress = true;
+
+  try {
+
+    const bytes = new TextEncoder().encode(message);
+
+    if (
+      bleWriteCharacteristic.properties.writeWithoutResponse &&
+      bleWriteCharacteristic.writeValueWithoutResponse
+    ) {
+
+      await bleWriteCharacteristic.writeValueWithoutResponse(bytes);
+
+    } else {
+
+      await bleWriteCharacteristic.writeValue(bytes);
+    }
+
+    lastRobotMessage = message;
+    lastRobotMessageTime = Date.now();
+
+    setBleStatus(
+      "Connected | Last command: " + message
+    );
+
+    return true;
+
+  }
+
+  catch (error) {
+
+    setBleStatus(
+      "BLE write failed: " +
+      (error?.message || String(error))
+    );
+
+    return false;
+  }
+
+  finally {
+
+    bleWriteInProgress = false;
+  }
+}
+
+
+// ==========================================
+// 10. SEND YOLO DETECTION TO ROBOT
+// ==========================================
+
+function sendDetectionToRobot(allBoxes) {
+
+  if (!bleWriteCharacteristic) return;
+
+  // No objects detected.
+  if (allBoxes.length === 0) {
+
+    sendRobotMessage("CLEAR");
+
+    return;
+  }
+
+  // Find the detection with highest confidence.
+  const bestBox = allBoxes.reduce((best, box) => {
+
+    const bestConfidence =
+      Number(best.conf) || 0;
+
+    const currentConfidence =
+      Number(box.conf) || 0;
+
+    return currentConfidence > bestConfidence
+      ? box
+      : best;
+
+  });
+
+  const objectName =
+    String(bestBox.name || "object")
+      .replace(/[^a-zA-Z0-9_-]/g, "_");
+
+  const confidence =
+    Number(bestBox.conf);
+
+  const confidenceText =
+    Number.isFinite(confidence)
+      ? confidence.toFixed(2)
+      : "0.00";
+
+  const message =
+    "DETECT:" +
+    objectName +
+    ":" +
+    confidenceText;
+
+  sendRobotMessage(message);
+}
+
+
+// ==========================================
+// 11. GENERAL STATUS FUNCTIONS
+// ==========================================
+
 function setStatus(message) {
+
   statusBox.textContent = message;
 }
 
+
 function setDebug(message) {
+
   debugBox.textContent = message;
 }
 
+
 function updateModelStatus() {
-  modelStatus.textContent = Object.keys(MODEL_FILES)
-    .map(key => {
-      const state = models[key] ? "LOADED" : "NOT LOADED";
-      return key + ": " + state + "\nFile: " + MODEL_FILES[key];
-    })
-    .join("\n\n");
+
+  modelStatus.textContent =
+    Object.keys(MODEL_FILES)
+
+      .map(key => {
+
+        const state =
+          models[key] ? "LOADED" : "NOT LOADED";
+
+        return key +
+          ": " + state +
+          "\nFile: " + MODEL_FILES[key];
+
+      })
+
+      .join("\n\n");
 }
 
+
+// ==========================================
+// 12. RESIZE CANVAS
+// ==========================================
+
 function resizeCanvas() {
-  if (!video.videoWidth || !video.videoHeight) return;
+
+  if (!video.videoWidth || !video.videoHeight) {
+    return;
+  }
 
   if (
     canvas.width !== video.videoWidth ||
     canvas.height !== video.videoHeight
   ) {
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
   }
 }
 
+
+// ==========================================
+// 13. LOAD YOLO MODELS
+// ==========================================
+
 async function loadModels() {
+
   if (loading) return;
+
   loading = true;
 
   const errors = [];
 
   try {
+
     setStatus("Loading AI library...");
 
     const module = await import("@ultralytics/yolo");
+
     YOLO = module.YOLO;
 
     if (!YOLO) {
-      throw new Error("YOLO library did not provide YOLO.load.");
+
+      throw new Error(
+        "YOLO library did not provide YOLO.load."
+      );
     }
 
     for (const key of Object.keys(MODEL_FILES)) {
+
       if (models[key]) continue;
 
       const filename = MODEL_FILES[key];
-      setStatus("Loading " + key + " model: " + filename);
+
+      setStatus(
+        "Loading " + key + " model: " + filename
+      );
 
       try {
+
         models[key] = await YOLO.load(filename, {
           device: "cpu"
         });
 
-        console.log("Loaded model:", key, models[key]);
-      } catch (error) {
+        console.log(
+          "Loaded model:",
+          key,
+          models[key]
+        );
+
+      }
+
+      catch (error) {
+
         errors.push(
           key + " (" + filename + "): " +
           (error?.stack || error?.message || String(error))
@@ -261,69 +670,135 @@ async function loadModels() {
       updateModelStatus();
     }
 
-    const loadedNames = Object.keys(models);
+    const loadedNames =
+      Object.keys(models);
 
-    const classInfo = loadedNames.map(key =>
-      key + " classes:\n" +
-      JSON.stringify(models[key].names ?? "Unknown", null, 2)
-    );
+    const classInfo =
+      loadedNames.map(key =>
+
+        key + " classes:\n" +
+        JSON.stringify(
+          models[key].names ?? "Unknown",
+          null,
+          2
+        )
+
+      );
 
     setDebug(
-      "Loaded models: " + (loadedNames.join(", ") || "None") +
-      "\n\n" + classInfo.join("\n\n") +
-      "\n\nLoading errors:\n" + (errors.join("\n\n") || "None")
+
+      "Loaded models: " +
+      (loadedNames.join(", ") || "None") +
+
+      "\n\n" +
+
+      classInfo.join("\n\n") +
+
+      "\n\nLoading errors:\n" +
+
+      (errors.join("\n\n") || "None")
     );
 
     if (loadedNames.length === 0) {
+
       throw new Error(
         "Neither model loaded. Open Detection Diagnostics."
       );
     }
 
     if (models.general && models.carRock) {
-      setStatus("Both models loaded. Starting detection...");
-    } else {
+
       setStatus(
-        "Only one model loaded. Check Detection Diagnostics for errors."
+        "Both models loaded. Starting detection..."
+      );
+
+    } else {
+
+      setStatus(
+        "Only one model loaded. Check Detection Diagnostics."
       );
     }
-  } finally {
+
+  }
+
+  finally {
+
     loading = false;
+
     updateModelStatus();
   }
 }
 
+
+// ==========================================
+// 14. GET DETECTION BOXES
+// ==========================================
+
 function getBoxes(results) {
-  return Array.isArray(results?.boxes) ? results.boxes : [];
+
+  return Array.isArray(results?.boxes)
+    ? results.boxes
+    : [];
 }
 
+
+// ==========================================
+// 15. DRAW DETECTION BOXES
+// ==========================================
+
 function drawBox(box, color, source) {
+
   const x1 = Number(box.x1);
   const y1 = Number(box.y1);
+
   const x2 = Number(box.x2);
   const y2 = Number(box.y2);
 
-  if (![x1, y1, x2, y2].every(Number.isFinite)) return;
+  if (
+    ![x1, y1, x2, y2].every(Number.isFinite)
+  ) {
+    return;
+  }
 
-  const left = Math.max(0, Math.min(canvas.width, x1));
-  const top = Math.max(0, Math.min(canvas.height, y1));
-  const right = Math.max(0, Math.min(canvas.width, x2));
-  const bottom = Math.max(0, Math.min(canvas.height, y2));
+  const left =
+    Math.max(0, Math.min(canvas.width, x1));
 
-  if (right <= left || bottom <= top) return;
+  const top =
+    Math.max(0, Math.min(canvas.height, y1));
 
-  const name = String(box.name || "Object");
-  const confidence = Number(box.conf);
+  const right =
+    Math.max(0, Math.min(canvas.width, x2));
 
-  const score = Number.isFinite(confidence)
-    ? " " + Math.round(confidence * 100) + "%"
-    : "";
+  const bottom =
+    Math.max(0, Math.min(canvas.height, y2));
 
-  const label = source + ": " + name + score;
+  if (right <= left || bottom <= top) {
+    return;
+  }
+
+  const name =
+    String(box.name || "Object");
+
+  const confidence =
+    Number(box.conf);
+
+  const score =
+    Number.isFinite(confidence)
+      ? " " + Math.round(confidence * 100) + "%"
+      : "";
+
+  const label =
+    source + ": " + name + score;
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 3;
-  ctx.strokeRect(left, top, right - left, bottom - top);
+
+  ctx.strokeRect(
+    left,
+    top,
+    right - left,
+    bottom - top
+  );
 
   ctx.font = "bold 14px Arial";
 
@@ -332,131 +807,280 @@ function drawBox(box, color, source) {
     canvas.width - left
   );
 
-  const labelY = Math.max(0, top - 23);
+  const labelY =
+    Math.max(0, top - 23);
 
   ctx.fillStyle = color;
-  ctx.fillRect(left, labelY, labelWidth, 23);
+
+  ctx.fillRect(
+    left,
+    labelY,
+    labelWidth,
+    23
+  );
 
   ctx.fillStyle = "#ffffff";
-  ctx.fillText(label, left + 5, labelY + 16);
+
+  ctx.fillText(
+    label,
+    left + 5,
+    labelY + 16
+  );
 }
 
+
+// ==========================================
+// 16. YOLO DETECTION LOOP
+// ==========================================
+
 async function detectLoop() {
+
   if (!running || detecting) return;
 
   detecting = true;
+
   let delay = 100;
 
   try {
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+
+    if (
+      video.readyState <
+      HTMLMediaElement.HAVE_CURRENT_DATA
+    ) {
+
       delay = 250;
+
       return;
     }
 
     resizeCanvas();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.clearRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
 
     const counts = {};
     const diagnostics = [];
+    const allBoxes = [];
 
-    // Run sequentially to reduce memory pressure on phones.
+    let predictionFailed = false;
+
+    // Run models one after another.
     for (const key of ["general", "carRock"]) {
+
       const model = models[key];
 
       if (!model) {
+
         counts[key] = null;
+        predictionFailed = true;
+
         continue;
       }
 
       try {
+
         const results = await model.predict(video, {
+
           conf: CONFIDENCE,
           iou: IOU
+
         });
 
         if (!running) return;
 
-        const boxes = getBoxes(results);
+        const boxes =
+          getBoxes(results);
+
         counts[key] = boxes.length;
 
+        allBoxes.push(...boxes);
+
         for (const box of boxes) {
-          drawBox(box, COLORS[key], key.toUpperCase());
+
+          drawBox(
+            box,
+            COLORS[key],
+            key.toUpperCase()
+          );
         }
 
         diagnostics.push(
-          key.toUpperCase() + ": " + boxes.length +
+
+          key.toUpperCase() +
+          ": " + boxes.length +
+
           " detections\nClasses: " +
-          JSON.stringify(model.names ?? "Unknown")
+
+          JSON.stringify(
+            model.names ?? "Unknown"
+          )
         );
-      } catch (error) {
+
+      }
+
+      catch (error) {
+
         counts[key] = null;
+        predictionFailed = true;
 
         diagnostics.push(
-          key.toUpperCase() + " prediction error:\n" +
-          (error?.stack || error?.message || String(error))
+
+          key.toUpperCase() +
+          " prediction error:\n" +
+
+          (error?.stack ||
+           error?.message ||
+           String(error))
         );
       }
     }
 
     const countText = value =>
+
       value === null || value === undefined
         ? "Unavailable"
         : value;
 
+
+    // Display detection counts.
     setStatus(
-      "General-object detections: " + countText(counts.general) +
-      "\nCar/rock model detections: " + countText(counts.carRock)
+
+      "General-object detections: " +
+      countText(counts.general) +
+
+      "\nCar/rock model detections: " +
+      countText(counts.carRock)
+    );
+
+
+    // Do not send CLEAR if a model failed.
+    if (predictionFailed) {
+
+      sendRobotMessage("STOP");
+
+      setBleStatus(
+        "A detection model failed. STOP sent if BLE is connected."
+      );
+
+    } else {
+
+      // Send detection result to ESP32.
+      sendDetectionToRobot(allBoxes);
+    }
+
+
+    setDebug(
+
+      diagnostics.join("\n\n") +
+
+      "\n\nModel files:\n" +
+
+      JSON.stringify(
+        MODEL_FILES,
+        null,
+        2
+      )
+    );
+
+  }
+
+  catch (error) {
+
+    setStatus(
+      "Detection error: " +
+      (error?.message || String(error))
     );
 
     setDebug(
-      diagnostics.join("\n\n") +
-      "\n\nModel files:\n" +
-      JSON.stringify(MODEL_FILES, null, 2)
+      error?.stack || String(error)
     );
-  } catch (error) {
-    setStatus("Detection error: " + (error?.message || String(error)));
-    setDebug(error?.stack || String(error));
+
+    // Stop robot if detection itself fails.
+    sendRobotMessage("STOP");
+
     delay = 500;
-  } finally {
+  }
+
+  finally {
+
     detecting = false;
 
     if (running) {
-      timer = setTimeout(detectLoop, delay);
+
+      timer = setTimeout(
+        detectLoop,
+        delay
+      );
     }
   }
 }
 
+
+// ==========================================
+// 17. START CAMERA
+// ==========================================
+
 async function startCamera() {
-  if (stream || loading || running) return;
+
+  if (stream || loading || running) {
+    return;
+  }
 
   const id = ++requestId;
+
   startButton.disabled = true;
 
   try {
+
     if (!navigator.mediaDevices?.getUserMedia) {
+
       throw new Error(
         "Camera access requires HTTPS. Open your GitHub Pages website."
       );
     }
 
-    setStatus("Requesting camera permission...");
+    setStatus(
+      "Requesting camera permission..."
+    );
 
-    const newStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 640 },
-        height: { ideal: 640 }
-      }
-    });
+    const newStream =
+      await navigator.mediaDevices.getUserMedia({
+
+        audio: false,
+
+        video: {
+
+          facingMode: {
+            ideal: "environment"
+          },
+
+          width: {
+            ideal: 640
+          },
+
+          height: {
+            ideal: 640
+          }
+        }
+      });
 
     if (id !== requestId) {
-      newStream.getTracks().forEach(track => track.stop());
+
+      newStream.getTracks().forEach(
+        track => track.stop()
+      );
+
       return;
     }
 
     stream = newStream;
+
     video.srcObject = stream;
+
     await video.play();
 
     if (id !== requestId) return;
@@ -466,21 +1090,36 @@ async function startCamera() {
     if (id !== requestId) return;
 
     if (Object.keys(models).length === 0) {
-      throw new Error("No models loaded. Check Detection Diagnostics.");
+
+      throw new Error(
+        "No models loaded. Check Detection Diagnostics."
+      );
     }
 
     running = true;
+
     stopButton.disabled = false;
+
     detectLoop();
-  } catch (error) {
-    setStatus("Startup error: " + (error?.message || String(error)));
+
+  }
+
+  catch (error) {
+
+    setStatus(
+      "Startup error: " +
+      (error?.message || String(error))
+    );
 
     setDebug(
+
       (error?.stack || String(error)) +
+
       "\n\nCheck model filenames, browser console, and model-format support."
     );
 
     if (id === requestId) {
+
       stopCamera(false);
     }
 
@@ -488,38 +1127,104 @@ async function startCamera() {
   }
 }
 
+
+// ==========================================
+// 18. STOP CAMERA
+// ==========================================
+
 function stopCamera(showMessage = true) {
+
+  // Tell robot to stop.
+  sendRobotMessage("CAMERA_STOPPED", true);
+
   requestId++;
+
   running = false;
 
   if (timer !== null) {
+
     clearTimeout(timer);
+
     timer = null;
   }
 
   if (stream) {
-    stream.getTracks().forEach(track => track.stop());
+
+    stream.getTracks().forEach(
+      track => track.stop()
+    );
+
     stream = null;
   }
 
   video.pause();
+
   video.srcObject = null;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.clearRect(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
 
   stopButton.disabled = true;
+
   startButton.disabled = loading;
 
   if (showMessage) {
+
     setStatus("Camera stopped.");
   }
 }
 
-startButton.addEventListener("click", startCamera);
-stopButton.addEventListener("click", () => stopCamera());
 
-window.addEventListener("pagehide", () => stopCamera(false));
+// ==========================================
+// 19. BUTTON EVENTS
+// ==========================================
+
+startButton.addEventListener(
+  "click",
+  startCamera
+);
+
+stopButton.addEventListener(
+  "click",
+  () => stopCamera()
+);
+
+connectBleButton.addEventListener(
+  "click",
+  connectRobotBle
+);
+
+disconnectBleButton.addEventListener(
+  "click",
+  disconnectRobotBle
+);
+
+
+// ==========================================
+// 20. PAGE CLOSE
+// ==========================================
+
+window.addEventListener("pagehide", () => {
+
+  sendRobotMessage("STOP", true);
+
+  stopCamera(false);
+});
+
+
+// ==========================================
+// 21. INITIALIZE WEBSITE
+// ==========================================
 
 updateModelStatus();
+
+updateBleButtons();
+
 </script>
+
 </body>
 </html>
