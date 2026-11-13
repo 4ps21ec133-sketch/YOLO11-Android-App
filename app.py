@@ -11,7 +11,7 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 HF_REPO_ID = "srushti-5/autonomous-vehicle-model"
 HF_MODEL_FILENAME = os.environ.get(
     "HF_MODEL_FILENAME",
-    "REPLACE_WITH_YOUR_EXACT_ONNX_FILENAME.onnx"
+    "yolov8s-worldv2.onnx"
 )
 
 CONFIDENCE = 0.15
